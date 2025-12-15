@@ -1,0 +1,16 @@
+# Node
+node_modules
+npm-debug.log*
+yarn.lock
+
+# Build
+dist
+build
+
+# Env
+.env
+.env.local
+
+# Cache
+server/.cache
+media

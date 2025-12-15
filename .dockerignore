@@ -1,0 +1,48 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Build outputs
+dist
+**/dist
+build
+**/build
+
+# Development files
+.git
+.gitignore
+.vscode
+.idea
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Cache directories
+.cache
+**/.cache
+.video_index_cache.json
+**/.gpscache.json
+
+# Clips directory
+clips
+**/clips
+
+# README and docs
+README.md
+*.md
+
+# Test files
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx

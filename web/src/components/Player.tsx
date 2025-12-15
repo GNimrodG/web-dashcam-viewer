@@ -1,0 +1,1054 @@
+import { useRef, useEffect, useState, useMemo } from "react";
+import { VideoPair, videoSourceUrl, createClip } from "../api";
+import Box from "@mui/joy/Box";
+import Stack from "@mui/joy/Stack";
+import Typography from "@mui/joy/Typography";
+import IconButton from "@mui/joy/IconButton";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import PauseIcon from "@mui/icons-material/Pause";
+import StopIcon from "@mui/icons-material/Stop";
+import ButtonGroup from "@mui/joy/ButtonGroup";
+import Slider from "@mui/joy/Slider";
+import VolumeUpIcon from "@mui/icons-material/VolumeUp";
+import VolumeOffIcon from "@mui/icons-material/VolumeOff";
+import CameraAltIcon from "@mui/icons-material/CameraAlt";
+import ContentCutIcon from "@mui/icons-material/ContentCut";
+import FullscreenIcon from "@mui/icons-material/Fullscreen";
+import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
+import Menu from "@mui/joy/Menu";
+import MenuItem from "@mui/joy/MenuItem";
+import ListItemDecorator from "@mui/joy/ListItemDecorator";
+import DownloadIcon from "@mui/icons-material/Download";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import Dropdown from "@mui/joy/Dropdown";
+import MenuButton from "@mui/joy/MenuButton";
+import Modal from "@mui/joy/Modal";
+import ModalDialog from "@mui/joy/ModalDialog";
+import DialogTitle from "@mui/joy/DialogTitle";
+import DialogContent from "@mui/joy/DialogContent";
+import DialogActions from "@mui/joy/DialogActions";
+import Button from "@mui/joy/Button";
+import FormControl from "@mui/joy/FormControl";
+import FormLabel from "@mui/joy/FormLabel";
+import Radio from "@mui/joy/Radio";
+import RadioGroup from "@mui/joy/RadioGroup";
+import type { Mark } from "@mui/base/useSlider";
+import { useHotkeys } from "@mantine/hooks";
+
+interface PlayerProps {
+  pair: VideoPair | null;
+  onTimeUpdate?: (t: number) => void;
+}
+
+function formatTime(seconds: number) {
+  const m = Math.floor(seconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const s = Math.floor(seconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+/**
+ * Get minimum marks for a video duration slider.
+ * @param duration in seconds
+ * @returns array of marks
+ */
+function getMinMarksForLength(duration: number): Mark[] {
+  const marks: Mark[] = [];
+  const totalMinutes = Math.floor(duration / 60);
+  const step =
+    totalMinutes <= 5
+      ? 0.5
+      : totalMinutes <= 10
+        ? 1
+        : totalMinutes <= 30
+          ? 5
+          : 10;
+
+  for (let i = 0; i <= totalMinutes; i += step) {
+    marks.push({
+      value: i * 60,
+      label: formatTime(i * 60),
+    });
+  }
+
+  // Only add final mark if it's different from the last one
+  const lastMark = marks.at(-1);
+  if (lastMark?.value !== duration) {
+    marks.push({ value: duration, label: formatTime(duration) });
+  }
+
+  return marks;
+}
+
+export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenCamera, setFullscreenCamera] = useState<
+    "front" | "rear" | null
+  >(null);
+  const frontRef = useRef<HTMLVideoElement | null>(null);
+  const rearRef = useRef<HTMLVideoElement | null>(null);
+  const frontContainerRef = useRef<HTMLDivElement | null>(null);
+  const rearContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Clip creation state
+  const [showClipDialog, setShowClipDialog] = useState(false);
+  const [clipStartTime, setClipStartTime] = useState(0);
+  const [clipEndTime, setClipEndTime] = useState(0);
+  const [clipChannels, setClipChannels] = useState<
+    "front" | "rear" | "both-stacked" | "both-side-by-side"
+  >("front");
+  const [clipAudioVolume, setClipAudioVolume] = useState(1); // 0-1 (0=mute, 1=original)
+  const [isCreatingClip, setIsCreatingClip] = useState(false);
+  const startPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const endPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Store original video times when opening clip dialog
+  const originalTimeFrontRef = useRef<number>(0);
+  const originalTimeRearRef = useRef<number>(0);
+
+  const handleOpenClipDialog = () => {
+    const currentTime = frontRef.current?.currentTime || 0;
+    setClipStartTime(Math.max(0, currentTime - 10));
+    setClipEndTime(Math.min(pair?.durationSec || 0, currentTime + 10));
+
+    // Store original times
+    originalTimeFrontRef.current = frontRef.current?.currentTime || 0;
+    originalTimeRearRef.current = rearRef.current?.currentTime || 0;
+
+    // Set default channel based on what's available
+    if (pair?.channels.front) {
+      setClipChannels("front");
+    } else if (pair?.channels.rear) {
+      setClipChannels("rear");
+    }
+
+    setShowClipDialog(true);
+
+    // Update preview frames after a short delay to ensure dialog is rendered
+    setTimeout(updatePreviewFrames, 100);
+  };
+
+  const handleCloseClipDialog = () => {
+    // Restore original video positions
+    if (frontRef.current) {
+      frontRef.current.currentTime = originalTimeFrontRef.current;
+    }
+    if (rearRef.current) {
+      rearRef.current.currentTime = originalTimeRearRef.current;
+    }
+    setShowClipDialog(false);
+  };
+
+  // Update preview frames when time changes
+  const updatePreviewFrames = (which: "start" | "end" | "both" = "both") => {
+    const captureFrame = (canvas: HTMLCanvasElement) => {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      if (clipChannels === "front" && frontRef.current) {
+        canvas.width = frontRef.current.videoWidth;
+        canvas.height = frontRef.current.videoHeight;
+        ctx.drawImage(frontRef.current, 0, 0);
+      } else if (clipChannels === "rear" && rearRef.current) {
+        canvas.width = rearRef.current.videoWidth;
+        canvas.height = rearRef.current.videoHeight;
+        ctx.drawImage(rearRef.current, 0, 0);
+      } else if (
+        clipChannels === "both-stacked" &&
+        frontRef.current &&
+        rearRef.current
+      ) {
+        // Stack vertically: front on top, rear on bottom
+        const width = Math.max(
+          frontRef.current.videoWidth,
+          rearRef.current.videoWidth,
+        );
+        const height = Math.max(
+          frontRef.current.videoHeight,
+          rearRef.current.videoHeight,
+        );
+        canvas.width = width;
+        canvas.height = height * 2;
+
+        // Draw front on top
+        ctx.drawImage(frontRef.current, 0, 0, width, height);
+        // Draw rear on bottom
+        ctx.drawImage(rearRef.current, 0, height, width, height);
+      } else if (
+        clipChannels === "both-side-by-side" &&
+        frontRef.current &&
+        rearRef.current
+      ) {
+        // Place side by side: front on left, rear on right
+        const width = Math.max(
+          frontRef.current.videoWidth,
+          rearRef.current.videoWidth,
+        );
+        const height = Math.max(
+          frontRef.current.videoHeight,
+          rearRef.current.videoHeight,
+        );
+        canvas.width = width * 2;
+        canvas.height = height;
+
+        // Draw front on left
+        ctx.drawImage(frontRef.current, 0, 0, width, height);
+        // Draw rear on right
+        ctx.drawImage(
+          rearRef.current,
+          frontRef.current.videoWidth,
+          0,
+          width,
+          height,
+        );
+      }
+    };
+
+    const primaryRef = frontRef.current || rearRef.current;
+    if (!primaryRef) return;
+
+    // Only update the preview that changed
+    if (which === "start" || which === "both") {
+      // Seek to start time
+      if (frontRef.current) frontRef.current.currentTime = clipStartTime;
+      if (rearRef.current) rearRef.current.currentTime = clipStartTime;
+
+      primaryRef.onseeked = () => {
+        if (startPreviewCanvasRef.current) {
+          captureFrame(startPreviewCanvasRef.current);
+        }
+
+        // If we also need to update end, do it after start is done
+        if (which === "both") {
+          if (frontRef.current) frontRef.current.currentTime = clipEndTime;
+          if (rearRef.current) rearRef.current.currentTime = clipEndTime;
+
+          primaryRef.onseeked = () => {
+            if (endPreviewCanvasRef.current) {
+              captureFrame(endPreviewCanvasRef.current);
+            }
+            primaryRef.onseeked = null;
+          };
+        } else {
+          primaryRef.onseeked = null;
+        }
+      };
+    } else if (which === "end") {
+      // Only seek to end time
+      if (frontRef.current) frontRef.current.currentTime = clipEndTime;
+      if (rearRef.current) rearRef.current.currentTime = clipEndTime;
+
+      primaryRef.onseeked = () => {
+        if (endPreviewCanvasRef.current) {
+          captureFrame(endPreviewCanvasRef.current);
+        }
+        primaryRef.onseeked = null;
+      };
+    }
+  };
+
+  const handleCreateClip = async () => {
+    if (!pair) return;
+
+    setIsCreatingClip(true);
+    try {
+      const result = await createClip(
+        pair.id,
+        clipStartTime,
+        clipEndTime,
+        clipChannels,
+        clipAudioVolume,
+      );
+      window.open(result.downloadUrl, "_blank");
+
+      handleCloseClipDialog();
+    } catch (err) {
+      console.error("Clip creation failed:", err);
+      alert("Failed to create clip. Check console for details.");
+    } finally {
+      setIsCreatingClip(false);
+    }
+  };
+
+  /**
+   * Capture a frame from a video element and return as canvas
+   */
+  const captureFrame = (videoElement: HTMLVideoElement): HTMLCanvasElement => {
+    const canvas = document.createElement("canvas");
+    canvas.width = videoElement.videoWidth;
+    canvas.height = videoElement.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+    }
+    return canvas;
+  };
+
+  /**
+   * Download a canvas as PNG image
+   */
+  const downloadCanvas = (canvas: HTMLCanvasElement, filename: string) => {
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  };
+
+  /**
+   * Copy canvas image to clipboard
+   */
+  const copyCanvasToClipboard = async (canvas: HTMLCanvasElement) => {
+    try {
+      const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob(resolve, "image/png");
+      });
+      if (!blob) throw new Error("Failed to create blob");
+
+      await navigator.clipboard.write([
+        new ClipboardItem({ "image/png": blob }),
+      ]);
+    } catch (err) {
+      console.error("Failed to copy to clipboard:", err);
+      alert("Failed to copy to clipboard. Please try downloading instead.");
+    }
+  };
+
+  /**
+   * Capture frame from specified video and perform action
+   */
+  const handleCapture = async (
+    camera: "front" | "rear",
+    action: "download" | "copy",
+  ) => {
+    const videoElement =
+      camera === "front" ? frontRef.current : rearRef.current;
+    if (!videoElement || !pair) return;
+
+    const canvas = captureFrame(videoElement);
+    const timestamp = formatTime(videoElement.currentTime).replaceAll(":", "-");
+    const filename = `${pair.id}_${camera}_${timestamp}.png`;
+
+    if (action === "download") {
+      downloadCanvas(canvas, filename);
+    } else {
+      await copyCanvasToClipboard(canvas);
+    }
+  };
+
+  const handleFullscreen = async (camera: "front" | "rear") => {
+    const container =
+      camera === "front" ? frontContainerRef.current : rearContainerRef.current;
+    if (!container) return;
+
+    try {
+      await container.requestFullscreen();
+      setFullscreenCamera(camera);
+      setIsFullscreen(true);
+    } catch (err) {
+      console.error("Failed to enter fullscreen:", err);
+    }
+  };
+
+  const handleExitFullscreen = async () => {
+    try {
+      await document.exitFullscreen();
+    } catch (err) {
+      console.error("Failed to exit fullscreen:", err);
+    }
+  };
+
+  // Listen for fullscreen changes
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        setIsFullscreen(false);
+        setFullscreenCamera(null);
+      }
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    // Reset on clip change
+    if (frontRef.current) {
+      frontRef.current.pause();
+      frontRef.current.currentTime = 0;
+    }
+
+    if (rearRef.current) {
+      rearRef.current.pause();
+      rearRef.current.currentTime = 0;
+    }
+
+    setIsPlaying(false);
+  }, [pair?.id]);
+
+  const onPlayBoth = () => {
+    const front = frontRef.current;
+    const rear = rearRef.current;
+    if (!front) return;
+
+    if (rear) {
+      rear.currentTime = front.currentTime || 0;
+      rear.volume = 0;
+      rear.play();
+    }
+    front.play();
+    setIsPlaying(true);
+  };
+
+  const onPauseBoth = () => {
+    const front = frontRef.current;
+    const rear = rearRef.current;
+    if (!front) return;
+
+    if (rear) {
+      rear.currentTime = front.currentTime || 0;
+      rear.pause();
+    }
+    front.pause();
+    setIsPlaying(false);
+  };
+
+  const onStopBoth = () => {
+    const front = frontRef.current;
+    const rear = rearRef.current;
+    if (!front) return;
+
+    front.pause();
+    front.currentTime = 0;
+    if (rear) {
+      rear.pause();
+      rear.currentTime = 0;
+    }
+    setIsPlaying(false);
+  };
+
+  useHotkeys([["space", () => (isPlaying ? onPauseBoth() : onPlayBoth())]]);
+
+  useEffect(() => {
+    const v = frontRef.current;
+    if (!v || !onTimeUpdate) return;
+    setIsPlaying(false);
+
+    const handler = () => onTimeUpdate(v.currentTime || 0);
+    v.addEventListener("timeupdate", handler);
+    v.addEventListener("seeked", handler);
+    return () => {
+      v.removeEventListener("timeupdate", handler);
+      v.removeEventListener("seeked", handler);
+    };
+  }, [onTimeUpdate, pair?.id]);
+
+  useEffect(() => {
+    const front = frontRef.current;
+    const rear = rearRef.current;
+    if (!front || !rear) return;
+
+    const syncTime = () => {
+      rear.currentTime = front.currentTime;
+    };
+    front.addEventListener("timeupdate", syncTime);
+
+    const playHandler = () => {
+      rear.currentTime = front.currentTime;
+      front.play();
+      rear.play();
+      setIsPlaying(true);
+    };
+
+    front.addEventListener("play", playHandler);
+    rear.addEventListener("play", playHandler);
+    front.addEventListener("playing", playHandler);
+
+    const pausedHandler = () => {
+      front.pause();
+      rear.pause();
+      setIsPlaying(false);
+    };
+
+    front.addEventListener("pause", pausedHandler);
+    rear.addEventListener("pause", pausedHandler);
+
+    return () => {
+      front.removeEventListener("timeupdate", syncTime);
+      front.removeEventListener("play", playHandler);
+      rear.removeEventListener("play", playHandler);
+      front.removeEventListener("playing", playHandler);
+      front.removeEventListener("pause", pausedHandler);
+      rear.removeEventListener("pause", pausedHandler);
+    };
+  }, [frontRef.current, rearRef.current]);
+
+  const marks = useMemo(
+    () => getMinMarksForLength(pair?.durationSec || 0),
+    [pair?.durationSec],
+  );
+
+  if (!pair)
+    return (
+      <Box
+        sx={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#888",
+        }}>
+        No video selected
+      </Box>
+    );
+
+  return (
+    <Stack direction="column" sx={{ width: "100%", height: "100%" }}>
+      <Stack spacing={0} sx={{ width: "100%" }} direction="column">
+        {/* Player Controls */}
+        {/* Without the key prop, the slider doesn't re-render correctly, keeping the old marks */}
+        <Slider
+          key={pair.id + "-slider"}
+          value={frontRef.current?.currentTime || 0}
+          min={0}
+          step={1}
+          max={pair.durationSec || 60}
+          aria-label="Video progress"
+          onChange={(_, newValue) => {
+            if (frontRef.current)
+              frontRef.current.currentTime = newValue as number;
+
+            if (rearRef.current)
+              rearRef.current.currentTime = newValue as number;
+          }}
+          marks={marks}
+          sx={{ mb: 2, marginInline: 3, width: "auto" }}
+        />
+
+        <Stack direction="row" spacing={1} alignItems="center">
+          <ButtonGroup>
+            <IconButton onClick={isPlaying ? onPauseBoth : onPlayBoth}>
+              {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
+            </IconButton>
+            <IconButton onClick={onStopBoth}>
+              <StopIcon />
+            </IconButton>
+          </ButtonGroup>
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            sx={{ flex: 1 }}>
+            {frontRef.current?.currentTime !== undefined &&
+              pair.durationSec !== undefined && (
+                <Typography
+                  level="body-sm"
+                  sx={{ color: "text.secondary" }}
+                  fontFamily="monospace">
+                  {formatTime(frontRef.current.currentTime)} /{" "}
+                  {formatTime(pair.durationSec)}
+                </Typography>
+              )}
+            {/* Volume Control */}
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <IconButton
+                size="sm"
+                color="neutral"
+                onClick={() => {
+                  if (frontRef.current)
+                    frontRef.current.volume =
+                      frontRef.current.volume > 0 ? 0 : 100;
+                }}>
+                {(frontRef.current?.volume ?? 100) > 0 ? (
+                  <VolumeUpIcon />
+                ) : (
+                  <VolumeOffIcon />
+                )}
+              </IconButton>
+              <Slider
+                value={frontRef.current?.volume || 0}
+                onChange={(_, newValue) => {
+                  if (frontRef.current)
+                    frontRef.current.volume = newValue as number;
+                }}
+                min={0}
+                max={1}
+                step={0.1}
+                sx={{ width: 100 }}
+              />
+            </Stack>
+
+            <Box sx={{ flex: 1 }} />
+
+            {/* Create Clip Button */}
+            <IconButton
+              size="sm"
+              color="primary"
+              variant="outlined"
+              onClick={handleOpenClipDialog}>
+              <ContentCutIcon />
+            </IconButton>
+
+            {/* Capture Frame Buttons */}
+            <Dropdown>
+              <MenuButton
+                slots={{ root: IconButton }}
+                slotProps={{
+                  root: {
+                    size: "sm",
+                    color: "neutral",
+                    variant: "outlined",
+                  },
+                }}>
+                <CameraAltIcon />
+              </MenuButton>
+              <Menu placement="bottom-end">
+                <MenuItem
+                  onClick={() => handleCapture("front", "download")}
+                  disabled={!pair.channels.front && !pair.channels.rear}>
+                  <ListItemDecorator>
+                    <DownloadIcon />
+                  </ListItemDecorator>
+                  Download {pair.channels.front ? "Front" : "Rear"} Frame
+                </MenuItem>
+                <MenuItem
+                  onClick={() => handleCapture("front", "copy")}
+                  disabled={!pair.channels.front && !pair.channels.rear}>
+                  <ListItemDecorator>
+                    <ContentCopyIcon />
+                  </ListItemDecorator>
+                  Copy {pair.channels.front ? "Front" : "Rear"} to Clipboard
+                </MenuItem>
+                {pair.channels.rear && pair.channels.front && (
+                  <>
+                    <MenuItem onClick={() => handleCapture("rear", "download")}>
+                      <ListItemDecorator>
+                        <DownloadIcon />
+                      </ListItemDecorator>
+                      Download Rear Frame
+                    </MenuItem>
+                    <MenuItem onClick={() => handleCapture("rear", "copy")}>
+                      <ListItemDecorator>
+                        <ContentCopyIcon />
+                      </ListItemDecorator>
+                      Copy Rear to Clipboard
+                    </MenuItem>
+                  </>
+                )}
+              </Menu>
+            </Dropdown>
+
+            <Typography level="title-md">{pair.id}</Typography>
+          </Stack>
+        </Stack>
+      </Stack>
+
+      <Stack
+        direction="row"
+        spacing={0.5}
+        sx={{ flex: 1 }}
+        justifyContent="center">
+        <Stack
+          direction="column"
+          spacing={1}
+          ref={frontContainerRef}
+          sx={{
+            flexBasis: "50%",
+            maxHeight: "100%",
+            position: "relative",
+            backgroundColor: "black",
+            "&:fullscreen": {
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            },
+          }}
+          alignItems="center">
+          <Typography level="title-lg" sx={{ color: "text.secondary" }}>
+            {pair.channels.front ? "Front" : "Rear"} Camera
+          </Typography>
+          <Box sx={{ position: "relative", width: "100%", height: "100%" }}>
+            <video
+              ref={frontRef}
+              src={
+                pair.channels.front
+                  ? videoSourceUrl(pair.id, "front")
+                  : pair.channels.rear
+                    ? videoSourceUrl(pair.id, "rear")
+                    : undefined
+              }
+              title={pair.channels.front ? "Front" : "Rear"}
+              style={{
+                maxWidth: "100%",
+                maxHeight: "100%",
+                width:
+                  isFullscreen && fullscreenCamera === "front"
+                    ? "100%"
+                    : "auto",
+                height:
+                  isFullscreen && fullscreenCamera === "front"
+                    ? "100%"
+                    : "auto",
+                objectFit: "contain",
+              }}>
+              <track kind="captions" label="Captions" src="" default />
+            </video>
+            {/* Fullscreen button */}
+            <IconButton
+              size="sm"
+              variant="solid"
+              color="neutral"
+              onClick={() => handleFullscreen("front")}
+              sx={{
+                position: "absolute",
+                top: 8,
+                right: 8,
+                opacity: 0.7,
+                "&:hover": { opacity: 1 },
+              }}>
+              <FullscreenIcon />
+            </IconButton>
+            {/* Fullscreen controls overlay */}
+            {isFullscreen && fullscreenCamera === "front" && (
+              <Box
+                sx={{
+                  position: "absolute",
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  background: "linear-gradient(transparent, rgba(0,0,0,0.8))",
+                  padding: 2,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 1,
+                }}>
+                <Slider
+                  value={frontRef.current?.currentTime || 0}
+                  min={0}
+                  step={1}
+                  max={pair.durationSec || 60}
+                  onChange={(_, newValue) => {
+                    if (frontRef.current)
+                      frontRef.current.currentTime = newValue as number;
+                    if (rearRef.current)
+                      rearRef.current.currentTime = newValue as number;
+                  }}
+                  sx={{ color: "white", mx: 3, width: "auto" }}
+                />
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <ButtonGroup>
+                    <IconButton
+                      onClick={isPlaying ? onPauseBoth : onPlayBoth}
+                      sx={{ color: "white" }}>
+                      {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
+                    </IconButton>
+                    <IconButton onClick={onStopBoth} sx={{ color: "white" }}>
+                      <StopIcon />
+                    </IconButton>
+                  </ButtonGroup>
+                  <Typography
+                    level="body-sm"
+                    sx={{ color: "white" }}
+                    fontFamily="monospace">
+                    {formatTime(frontRef.current?.currentTime || 0)} /{" "}
+                    {formatTime(pair.durationSec || 0)}
+                  </Typography>
+                  <Box sx={{ flex: 1 }} />
+                  <IconButton
+                    onClick={handleExitFullscreen}
+                    sx={{ color: "white" }}>
+                    <FullscreenExitIcon />
+                  </IconButton>
+                </Stack>
+              </Box>
+            )}
+          </Box>
+        </Stack>
+        {pair.channels.front && pair.channels.rear && (
+          <Stack
+            direction="column"
+            spacing={1}
+            ref={rearContainerRef}
+            sx={{
+              flexBasis: "50%",
+              maxHeight: "100%",
+              position: "relative",
+              backgroundColor: "black",
+              "&:fullscreen": {
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              },
+            }}
+            alignItems="center">
+            <Typography level="title-lg" sx={{ color: "text.secondary" }}>
+              Rear Camera
+            </Typography>
+            <Box sx={{ position: "relative", width: "100%", height: "100%" }}>
+              <video
+                ref={rearRef}
+                src={videoSourceUrl(pair.id, "rear")}
+                title="Rear"
+                style={{
+                  maxWidth: "100%",
+                  maxHeight: "100%",
+                  width:
+                    isFullscreen && fullscreenCamera === "rear"
+                      ? "100%"
+                      : "auto",
+                  height:
+                    isFullscreen && fullscreenCamera === "rear"
+                      ? "100%"
+                      : "auto",
+                  objectFit: "contain",
+                }}>
+                <track kind="captions" label="Captions" src="" default />
+              </video>
+              {/* Fullscreen button */}
+              <IconButton
+                size="sm"
+                variant="solid"
+                color="neutral"
+                onClick={() => handleFullscreen("rear")}
+                sx={{
+                  position: "absolute",
+                  top: 8,
+                  right: 8,
+                  opacity: 0.7,
+                  "&:hover": { opacity: 1 },
+                }}>
+                <FullscreenIcon />
+              </IconButton>
+              {/* Fullscreen controls overlay */}
+              {isFullscreen && fullscreenCamera === "rear" && (
+                <Box
+                  sx={{
+                    position: "absolute",
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    background: "linear-gradient(transparent, rgba(0,0,0,0.8))",
+                    padding: 2,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 1,
+                  }}>
+                  <Slider
+                    value={rearRef.current?.currentTime || 0}
+                    min={0}
+                    step={1}
+                    max={pair.durationSec || 60}
+                    onChange={(_, newValue) => {
+                      if (frontRef.current)
+                        frontRef.current.currentTime = newValue as number;
+                      if (rearRef.current)
+                        rearRef.current.currentTime = newValue as number;
+                    }}
+                    sx={{ color: "white", mx: 3, width: "auto" }}
+                  />
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <ButtonGroup>
+                      <IconButton
+                        onClick={isPlaying ? onPauseBoth : onPlayBoth}
+                        sx={{ color: "white" }}>
+                        {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
+                      </IconButton>
+                      <IconButton onClick={onStopBoth} sx={{ color: "white" }}>
+                        <StopIcon />
+                      </IconButton>
+                    </ButtonGroup>
+                    <Typography
+                      level="body-sm"
+                      sx={{ color: "white" }}
+                      fontFamily="monospace">
+                      {formatTime(rearRef.current?.currentTime || 0)} /{" "}
+                      {formatTime(pair.durationSec || 0)}
+                    </Typography>
+                    <Box sx={{ flex: 1 }} />
+                    <IconButton
+                      onClick={handleExitFullscreen}
+                      sx={{ color: "white" }}>
+                      <FullscreenExitIcon />
+                    </IconButton>
+                  </Stack>
+                </Box>
+              )}
+            </Box>
+          </Stack>
+        )}
+      </Stack>
+
+      {/* Clip Creation Dialog */}
+      <Modal open={showClipDialog} onClose={handleCloseClipDialog}>
+        <ModalDialog sx={{ minWidth: 600, maxWidth: 1000, overflow: "hidden" }}>
+          <DialogTitle>Create Video Clip</DialogTitle>
+          <DialogContent sx={{ overflow: "visible", p: 1 }}>
+            <Stack spacing={3}>
+              {/* Preview Frames */}
+              <Stack direction="row" spacing={2} justifyContent="center">
+                <Box sx={{ textAlign: "center" }}>
+                  <Typography level="body-sm" sx={{ mb: 1 }}>
+                    Start: {formatTime(clipStartTime)}
+                  </Typography>
+                  <canvas
+                    ref={startPreviewCanvasRef}
+                    style={{
+                      maxWidth: "100%",
+                      height: "auto",
+                      border: "2px solid",
+                      borderColor: "primary.500",
+                      borderRadius: "4px",
+                    }}
+                  />
+                </Box>
+                <Box sx={{ textAlign: "center" }}>
+                  <Typography level="body-sm" sx={{ mb: 1 }}>
+                    End: {formatTime(clipEndTime)}
+                  </Typography>
+                  <canvas
+                    ref={endPreviewCanvasRef}
+                    style={{
+                      maxWidth: "100%",
+                      height: "auto",
+                      border: "2px solid",
+                      borderColor: "primary.500",
+                      borderRadius: "4px",
+                    }}
+                  />
+                </Box>
+              </Stack>
+
+              {/* Time Range Slider */}
+              <FormControl>
+                <FormLabel>
+                  Clip Range: {formatTime(clipStartTime)} →{" "}
+                  {formatTime(clipEndTime)} (Duration:{" "}
+                  {formatTime(clipEndTime - clipStartTime)})
+                </FormLabel>
+                <Slider
+                  disabled={isCreatingClip}
+                  value={[clipStartTime, clipEndTime]}
+                  onChange={(_, value) => {
+                    const [_start, _end] = value as number[];
+                    if (_start === _end) return; // Prevent zero-length clips
+
+                    const startChanged = _start !== clipStartTime;
+                    const endChanged = _end !== clipEndTime;
+
+                    if (startChanged) setClipStartTime(_start);
+                    if (endChanged) setClipEndTime(_end);
+
+                    // Only update the preview that changed
+                    if (startChanged && endChanged) {
+                      updatePreviewFrames("both");
+                    } else if (startChanged) {
+                      updatePreviewFrames("start");
+                    } else if (endChanged) {
+                      updatePreviewFrames("end");
+                    }
+                  }}
+                  min={0}
+                  max={pair?.durationSec || 100}
+                  step={0.1}
+                  valueLabelDisplay="auto"
+                  valueLabelFormat={(value) => formatTime(value)}
+                  disableSwap
+                />
+              </FormControl>
+
+              <FormControl>
+                <FormLabel>Channel(s)</FormLabel>
+                <RadioGroup
+                  value={clipChannels}
+                  onChange={(e) =>
+                    setClipChannels(e.target.value as typeof clipChannels)
+                  }>
+                  {pair?.channels.front && (
+                    <Radio
+                      disabled={isCreatingClip}
+                      value="front"
+                      label="Front only"
+                    />
+                  )}
+                  {pair?.channels.rear && (
+                    <Radio
+                      disabled={isCreatingClip}
+                      value="rear"
+                      label="Rear only"
+                    />
+                  )}
+                  {pair?.channels.front && pair?.channels.rear && (
+                    <>
+                      <Radio
+                        disabled={isCreatingClip}
+                        value="both-side-by-side"
+                        label="Both (side by side)"
+                      />
+                      <Radio
+                        disabled={isCreatingClip}
+                        value="both-stacked"
+                        label="Both (stacked)"
+                      />
+                    </>
+                  )}
+                </RadioGroup>
+              </FormControl>
+
+              <FormControl>
+                <FormLabel>
+                  Audio Volume:{" "}
+                  {clipAudioVolume === 0
+                    ? "Muted"
+                    : `${Math.round(clipAudioVolume * 100)}%`}
+                </FormLabel>
+                <Slider
+                  value={clipAudioVolume}
+                  onChange={(_, value) => setClipAudioVolume(value as number)}
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  marks={[
+                    { value: 0, label: "Mute" },
+                    { value: 0.5, label: "50%" },
+                    { value: 1, label: "100%" },
+                  ]}
+                  disabled={isCreatingClip}
+                  valueLabelDisplay="auto"
+                  valueLabelFormat={(value) => `${Math.round(value * 100)}%`}
+                />
+              </FormControl>
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Box sx={{ flex: 1 }} />
+            <Button
+              variant="outlined"
+              color="neutral"
+              disabled={isCreatingClip}
+              onClick={handleCloseClipDialog}>
+              Cancel
+            </Button>
+            <Button
+              variant="solid"
+              color="primary"
+              onClick={handleCreateClip}
+              loading={isCreatingClip}
+              disabled={clipEndTime <= clipStartTime}>
+              Create Clip
+            </Button>
+          </DialogActions>
+        </ModalDialog>
+      </Modal>
+    </Stack>
+  );
+}

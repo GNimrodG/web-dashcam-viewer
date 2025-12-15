@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  web-dashcam-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - MEDIA_DIR=/media
+      # Authentication (Authentik OIDC)
+      # - AUTH_ENABLED=false  # Set to true to enable authentication
+      # - AUTHENTIK_ISSUER=https://your-authentik.domain/application/o/dashcam-viewer/
+      # - AUTHENTIK_CLIENT_ID=your-client-id
+      # - AUTHENTIK_CLIENT_SECRET=your-client-secret
+      # - AUTHENTIK_REDIRECT_URI=http://localhost:3000/api/auth/callback
+      # - SESSION_SECRET=change-this-to-a-random-secret-string
+    volumes:
+      # Mount your dashcam videos directory here
+      - ./media:/media
+    restart: unless-stopped

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashcam App</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+
+    .container {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: 100vh;
+    }
+
+    .sidebar {
+      border-right: 1px solid #ddd;
+      overflow-y: auto;
+    }
+
+    .main {
+      display: grid;
+      grid-template-rows: 50% 50%;
+    }
+
+    .videos {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 8px;
+      background: #111;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      background: black;
+      margin-bottom: -24px;
+    }
+
+    .map {
+      height: 100%;
+    }
+
+    .header {
+      padding: 8px;
+      border-bottom: 1px solid #ddd;
+    }
+
+    .list {
+      padding: 8px;
+    }
+
+    .list-item {
+      padding: 8px;
+      border-bottom: 1px solid #eee;
+      cursor: pointer;
+    }
+
+    .list-item.active {
+      background: #eef6ff;
+    }
+
+    .controls {
+      padding: 8px;
+      border-bottom: 1px solid #ddd;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button {
+      padding: 6px 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
+</html>

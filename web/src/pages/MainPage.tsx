@@ -1,0 +1,40 @@
+import { useState } from "react";
+import { useOutletContext } from "react-router-dom";
+import MapView from "../components/MapView";
+import { Player } from "../components/Player";
+import Box from "@mui/joy/Box";
+import { VideoPair } from "../api";
+
+interface OutletContext {
+  activePair: VideoPair | null;
+  setActivePair: (pair: VideoPair | null) => void;
+}
+
+export default function MainPage() {
+  const { activePair } = useOutletContext<OutletContext>();
+  const [currentTimeSec, setCurrentTimeSec] = useState<number>(0);
+
+  return (
+    <Box
+      component="main"
+      className="MainContent"
+      sx={{
+        px: { xs: 2, md: 6 },
+        pt: {
+          xs: "calc(12px + var(--Header-height))",
+          sm: "calc(12px + var(--Header-height))",
+          md: 3,
+        },
+        pb: { xs: 2, sm: 2, md: 3 },
+        flex: 1,
+        display: "grid",
+        gridTemplateRows: "1fr 1fr",
+        minWidth: 0,
+        height: "100dvh",
+        gap: 1,
+      }}>
+      <Player pair={activePair} onTimeUpdate={setCurrentTimeSec} />
+      <MapView pair={activePair} currentTimeSec={currentTimeSec} />
+    </Box>
+  );
+}

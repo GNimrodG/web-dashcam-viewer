@@ -1,0 +1,21 @@
+{
+  "name": "web-dashcam-viewer",
+  "private": true,
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "resolutions": {
+    "@types/express": "^5.0.6",
+    "@types/express-serve-static-core": "^5.0.2"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"yarn --cwd server dev\" \"yarn --cwd web dev\"",
+    "build": "yarn --cwd server build && yarn --cwd web build",
+    "start": "yarn --cwd server start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "prettier": "^3.6.2"
+  }
+}
