@@ -436,7 +436,17 @@ async function safeProbe(filePath: string): Promise<FFProbeResult | null> {
   try {
     return await ffprobe(filePath);
   } catch (e) {
-    logger.warn(e, "ffprobe failed for: " + filePath);
+    if (e instanceof Error) {
+      if (e instanceof ExecaError) {
+        logger.error(
+          "ffprobe error: " + filePath + " - " + (e.stderr || e.message),
+        );
+      } else {
+        logger.error(e, "ffprobe Error for file: " + filePath);
+      }
+    } else {
+      logger.error("Unknown ffprobe error for file: " + filePath);
+    }
     return null;
   }
 }
@@ -663,6 +673,7 @@ import http from "node:http";
 import { pipeline } from "node:stream";
 import mime from "mime-types";
 import { logger } from "../logger.js";
+import { ExecaError } from "execa";
 
 export function streamVideo(
   req: http.IncomingMessage,

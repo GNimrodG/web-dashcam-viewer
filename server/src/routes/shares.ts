@@ -152,7 +152,7 @@ router.get("/:tokenId/download", async (req, res) => {
 router.get("/video/:videoId", requireAuth, async (req, res) => {
   try {
     const { videoId } = req.params;
-    const tokens = getTokensForVideo(videoId);
+    const tokens = getTokensForVideo(videoId as string);
 
     res.json({ tokens });
   } catch (error) {
@@ -165,7 +165,7 @@ router.get("/video/:videoId", requireAuth, async (req, res) => {
 router.delete("/:tokenId", requireAuth, async (req, res) => {
   try {
     const { tokenId } = req.params;
-    deleteShareToken(tokenId);
+    deleteShareToken(tokenId as string);
 
     res.json({ success: true });
   } catch (error) {

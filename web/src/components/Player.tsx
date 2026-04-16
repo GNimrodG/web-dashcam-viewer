@@ -666,7 +666,6 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
             flexBasis: "50%",
             maxHeight: "100%",
             position: "relative",
-            backgroundColor: "black",
             "&:fullscreen": {
               display: "flex",
               alignItems: "center",
@@ -677,7 +676,15 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
           <Typography level="title-lg" sx={{ color: "text.secondary" }}>
             {pair.channels.front ? "Front" : "Rear"} Camera
           </Typography>
-          <Box sx={{ position: "relative", width: "100%", height: "100%" }}>
+          <Box
+            sx={{
+              position: "relative",
+              width: "100%",
+              height: "100%",
+              backgroundColor: "black",
+              display: "flex",
+              justifyContent: "center",
+            }}>
             <video
               ref={frontRef}
               src={
@@ -783,7 +790,6 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
               flexBasis: "50%",
               maxHeight: "100%",
               position: "relative",
-              backgroundColor: "black",
               "&:fullscreen": {
                 display: "flex",
                 alignItems: "center",
@@ -794,7 +800,15 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
             <Typography level="title-lg" sx={{ color: "text.secondary" }}>
               Rear Camera
             </Typography>
-            <Box sx={{ position: "relative", width: "100%", height: "100%" }}>
+            <Box
+              sx={{
+                position: "relative",
+                width: "100%",
+                height: "100%",
+                backgroundColor: "black",
+                display: "flex",
+                justifyContent: "center",
+              }}>
               <video
                 ref={rearRef}
                 src={videoSourceUrl(pair.id, "rear")}
