@@ -12,6 +12,7 @@ import {
 } from "../services/indexer.js";
 import { createClip } from "../services/clipper.js";
 import { generateGPX } from "../services/gpx.js";
+import { saveRecordedGpxTrack } from "../services/gps.js";
 import { ensureThumbnail, getThumbnailPath } from "../services/thumbnail.js";
 import { ffprobe } from "../services/ffprobe.js";
 import { loadConfig } from "../config.js";
@@ -337,6 +338,29 @@ router.get("/:id/gps/gpx", async (req, res) => {
     res.send(gpxContent);
   } catch (e: any) {
     res.status(500).json({ error: e?.message || "Failed to generate GPX" });
+  }
+});
+
+router.post("/:id/gps/gpx", async (req, res) => {
+  try {
+    const pair = getVideoPairById(req.params.id);
+    if (!pair) {
+      return res.status(404).json({ error: "Video pair not found" });
+    }
+
+    const gpxXml = getAny(req.body, "gpxXml");
+    if (typeof gpxXml !== "string" || !gpxXml.trim()) {
+      return res.status(400).json({ error: "GPX XML is required" });
+    }
+
+    const filePath = saveRecordedGpxTrack(config.MEDIA_DIR, pair.id, gpxXml);
+    res.json({
+      success: true,
+      message: "GPX stored for recording",
+      filePath,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "Failed to store GPX" });
   }
 });
 

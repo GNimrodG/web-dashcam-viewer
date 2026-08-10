@@ -29,6 +29,23 @@ export interface VideoFile {
   noGps?: boolean; // true if we know there's no GPS data at all
 }
 
+export interface ClipFile {
+  filename: string;
+  url: string;
+  thumbnailUrl: string;
+  size: number;
+  duration?: number;
+  width?: number;
+  height?: number;
+  createdAt: string;
+  videoId?: string;
+  clipStartTime?: number;
+  clipEndTime?: number;
+  clipChannels?: string;
+  clipStartAt?: string | null;
+  clipEndAt?: string | null;
+}
+
 export interface VideoPair {
   id: string;
   startTime?: string;
@@ -55,6 +72,14 @@ export interface GPSPoint {
 export interface GPSData {
   front?: GPSPoint[];
   rear?: GPSPoint[];
+}
+
+export async function storeRecordedGpx(
+  id: string,
+  gpxXml: string,
+): Promise<{ success: boolean; message: string; filePath: string }> {
+  const { data } = await api.post(`/videos/${id}/gps/gpx`, { gpxXml });
+  return data;
 }
 
 export async function fetchPairs(): Promise<VideoPair[]> {
@@ -179,6 +204,8 @@ export async function getShareToken(tokenId: string): Promise<{
   clipStartTime: number;
   clipEndTime: number;
   clipChannels: string;
+  clipStartAt: string | null;
+  clipEndAt: string | null;
   createdAt: number;
   expiresAt: number | null;
   downloadUrl: string;

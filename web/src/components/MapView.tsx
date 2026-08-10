@@ -11,18 +11,21 @@ import CircularProgress from "@mui/joy/CircularProgress";
 import IconButton from "@mui/joy/IconButton";
 import DownloadIcon from "@mui/icons-material/Download";
 import Tooltip from "@mui/joy/Tooltip";
+import VideoGpxUploader from "./VideoGpxUploader";
 
 type Props = {
   pair: VideoPair | null;
   currentTimeSec?: number;
 };
 export default function MapView({ pair, currentTimeSec }: Readonly<Props>) {
+  const canAutoCrop =
+    !!pair?.startTime && Number.isFinite(pair?.durationSec ?? Number.NaN);
   const markerRef = useRef<L.Layer | null>(null);
   const mapRef = useRef<L.Map>(null);
   const linePointsRef = useRef<
     Array<{ tsSec: number; lat: number; lon: number }>
   >([]);
-  const { gps, loading, error } = useGpsData(pair?.id || null);
+  const { gps, loading, error, refresh } = useGpsData(pair?.id || null);
 
   useEffect(() => {
     if (
@@ -159,6 +162,35 @@ export default function MapView({ pair, currentTimeSec }: Readonly<Props>) {
           Error loading GPS data ({(error as Error).message})
         </Box>
       )}
+
+      {!loading &&
+        !error &&
+        pair &&
+        !gps?.front?.length &&
+        !gps?.rear?.length && (
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 1000,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              pointerEvents: "none",
+              p: 2,
+            }}>
+            <Box sx={{ pointerEvents: "auto", width: "100%", maxWidth: 520 }}>
+              {canAutoCrop ? (
+                <VideoGpxUploader
+                  videoId={pair.id}
+                  startTime={pair.startTime || null}
+                  durationSec={pair.durationSec || null}
+                  onStored={refresh}
+                />
+              ) : null}
+            </Box>
+          </Box>
+        )}
 
       {/* Download GPX Button */}
       {!!pair && !!gps && !!(gps.front?.length || gps.rear?.length) && (

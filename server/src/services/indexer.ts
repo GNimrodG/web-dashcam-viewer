@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import fssync from "node:fs";
 import chokidar from "chokidar";
 import { ffprobe, FFProbeResult, parseISO6709 } from "./ffprobe.js";
-import { extractTimedGpsTrack } from "./gps.js";
+import { extractTimedGpsTrack, loadRecordedGpxTrack } from "./gps.js";
 import { reverseGeocodeDetailed } from "./geocode.js";
 import { parseFilenameForPairing } from "../utils/pairing.js";
 import type { VideoPair, VideoFile, GpsPoint } from "../types.js";
@@ -43,6 +43,33 @@ function getCachePath(mediaDir: string) {
   }
   // Default: store cache in media directory
   return path.join(mediaDir, ".video_index_cache.json");
+}
+
+function parseFilenameStartTimeIso(parsed: {
+  date?: string;
+  time?: string;
+}): string | undefined {
+  if (!parsed.date || !parsed.time) return undefined;
+  if (parsed.date.length !== 8 || parsed.time.length < 6) return undefined;
+
+  const yyyy = Number.parseInt(parsed.date.slice(0, 4), 10);
+  const mm = Number.parseInt(parsed.date.slice(4, 6), 10);
+  const dd = Number.parseInt(parsed.date.slice(6, 8), 10);
+  const hh = Number.parseInt(parsed.time.slice(0, 2), 10);
+  const mi = Number.parseInt(parsed.time.slice(2, 4), 10);
+  const ss = Number.parseInt(parsed.time.slice(4, 6), 10);
+
+  if (![yyyy, mm, dd, hh, mi, ss].every(Number.isFinite)) return undefined;
+
+  const localTime = new Date(yyyy, mm - 1, dd, hh, mi, ss);
+  const ms = localTime.getTime();
+  if (Number.isNaN(ms)) return undefined;
+  return localTime.toISOString();
+}
+
+function parsePairIdStartTimeIso(pairId: string): string | undefined {
+  const [date, time] = pairId.split("_");
+  return parseFilenameStartTimeIso({ date, time });
 }
 
 async function loadCache(mediaDir: string) {
@@ -148,6 +175,10 @@ export async function buildIndex(mediaDir: string) {
         if (!vf) continue;
         try {
           const st = await fs.stat(vf.path);
+          vf.createdAt ||= parseFilenameStartTimeIso(
+            parseFilenameForPairing(vf.path),
+          );
+          vf.createdAt ||= st.birthtime.toISOString();
           if (
             vf.size !== st.size ||
             (vf.mtimeMs && Math.abs(vf.mtimeMs - st.mtimeMs) > 1)
@@ -159,6 +190,12 @@ export async function buildIndex(mediaDir: string) {
           // File missing -> remove channel
           delete pair.channels[chName];
         }
+      }
+      if (!pair.startTime) {
+        pair.startTime =
+          pair.channels.front?.createdAt ||
+          pair.channels.rear?.createdAt ||
+          parsePairIdStartTimeIso(pair.id);
       }
       if (!pair.channels.front && !pair.channels.rear) {
         toDelete.push(pair.id);
@@ -316,7 +353,9 @@ async function upsertFile(filePath: string) {
       createdAt:
         existing?.createdAt ||
         meta?.format?.tags?.creation_time ||
-        meta?.format?.tags?.["com.apple.quicktime.creationdate"],
+        meta?.format?.tags?.["com.apple.quicktime.creationdate"] ||
+        parseFilenameStartTimeIso(parsed) ||
+        st.birthtime.toISOString(),
       durationSec:
         existing?.durationSec || tryParseNumber(meta?.format?.duration),
       location: existing?.location ?? parseLocation(meta),
@@ -509,6 +548,25 @@ function startGpsExtraction(
       const pair = getVideoPairById(id);
       if (!pair) throw new Error("Not found");
 
+      const recorded = loadRecordedGpxTrack(
+        MEDIA_DIR,
+        pair.id,
+        pair.startTime || parsePairIdStartTimeIso(pair.id),
+      );
+      if (recorded?.length) {
+        logger.info(`Using stored GPX track for pair: ${id}`);
+        const result: { front?: GpsPoint[]; rear?: GpsPoint[] } = {};
+        if (pair.channels.front) {
+          result.front = recorded;
+          pair.channels.front.noGps = false;
+        } else if (pair.channels.rear) {
+          result.rear = recorded;
+          pair.channels.rear.noGps = false;
+        }
+        scheduleSave();
+        return result;
+      }
+
       if (
         (!pair.channels.front || pair.channels.front.noGps) &&
         (!pair.channels.rear || pair.channels.rear.noGps)
@@ -518,15 +576,20 @@ function startGpsExtraction(
       }
 
       const result: { front?: GpsPoint[]; rear?: GpsPoint[] } = {};
+
       if (pair.channels.front) {
-        result.front = await extractTimedGpsTrack(pair.channels.front.path);
+        if (!result.front) {
+          result.front = await extractTimedGpsTrack(pair.channels.front.path);
+        }
         pair.channels.front.noGps = !result.front.length;
         logger.info(
           `Extracted GPS track for front channel: ${pair.channels.front.path}`,
         );
       }
       if (pair.channels.rear) {
-        result.rear = await extractTimedGpsTrack(pair.channels.rear.path);
+        if (!result.rear) {
+          result.rear = await extractTimedGpsTrack(pair.channels.rear.path);
+        }
         pair.channels.rear.noGps = !result.rear.length;
         logger.info(
           `Extracted GPS track for rear channel: ${pair.channels.rear.path}`,

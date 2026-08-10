@@ -3,6 +3,7 @@ import type { GpsPoint } from "../types.js";
 import { logger } from "../logger.js";
 import { processManager } from "../utils/process-manager.js";
 import fs from "node:fs";
+import path from "node:path";
 
 // Persistent file-based cache: stores a JSON file per video (e.g., myvideo.mp4.gpscache.json)
 // Can be redirected to local disk for network shares via GPS_CACHE_DIR
@@ -17,11 +18,75 @@ function getGpsCachePath(filePath: string) {
   return filePath + ".gpscache.json";
 }
 
+function getRecordedGpxPath(mediaDir: string, pairId: string) {
+  return path.join(mediaDir, "recorded-gpx", `${pairId}.gpx`);
+}
+
+export function saveRecordedGpxTrack(
+  mediaDir: string,
+  pairId: string,
+  gpxXml: string,
+): string {
+  const dir = path.join(mediaDir, "recorded-gpx");
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = getRecordedGpxPath(mediaDir, pairId);
+  fs.writeFileSync(filePath, gpxXml, "utf8");
+  return filePath;
+}
+
+export function loadRecordedGpxTrack(
+  mediaDir: string,
+  pairId: string,
+  startTime?: string,
+): GpsPoint[] | null {
+  const filePath = getRecordedGpxPath(mediaDir, pairId);
+  if (!fs.existsSync(filePath)) return null;
+  if (!startTime) return null;
+
+  const startMs = new Date(startTime).getTime();
+  if (!Number.isFinite(startMs)) return null;
+
+  try {
+    const xml = fs.readFileSync(filePath, "utf8");
+    const points: GpsPoint[] = [];
+    const trackPointRegex =
+      /<trkpt\b[^>]*lat="([^"]+)"[^>]*lon="([^"]+)"[^>]*>([\s\S]*?)<\/trkpt>/gi;
+
+    for (const match of xml.matchAll(trackPointRegex)) {
+      const lat = Number(match[1]);
+      const lon = Number(match[2]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+      const body = match[3];
+      const timeMatch = /<time>([^<]+)<\/time>/i.exec(body);
+      if (!timeMatch) continue;
+      const timeMs = Date.parse(timeMatch[1].trim());
+      if (!Number.isFinite(timeMs)) continue;
+
+      const eleMatch = /<ele>([^<]+)<\/ele>/i.exec(body);
+      const ele = eleMatch ? Number(eleMatch[1]) : undefined;
+      const tsSec = (timeMs - startMs) / 1000;
+      points.push({
+        tsSec,
+        lat,
+        lon,
+        alt: Number.isFinite(ele) ? ele : undefined,
+      });
+    }
+
+    points.sort((a, b) => a.tsSec - b.tsSec);
+    return points.length ? dedupePoints(points) : [];
+  } catch (error) {
+    logger.warn(error, `Failed to read recorded GPX: ${filePath}`);
+    return null;
+  }
+}
+
 /**
  * Extract timed GPS track from embedded metadata.
  * Priority:
  *  1) exiftool (-ee) via CSV: GPSDateTime, lat, lon, speed(m/s)
- *  2) ffprobe NMEA from data/subtitle streams (if ENABLE_FFPROBE_DATA_STREAMS != "false")
+ *  2) ffprobe NMEA from data and subtitle streams (if ENABLE_FFPROBE_DATA_STREAMS != "false")
  *  3) ffprobe NMEA from H.264 video SEI (v:0) (if ENABLE_FFPROBE_VIDEO_STREAMS="true")
  *
  * Optional env:
@@ -77,9 +142,15 @@ export async function extractTimedGpsTrack(
 
     if (enableDataStreams) {
       try {
-        const viaData = await extractFromStreams(filePath, "d,s");
+        const viaData: GpsPoint[] = [];
+        for (const select of ["d", "s"]) {
+          const points = await extractFromStreams(filePath, select);
+          if (points.length) {
+            viaData.push(...points);
+          }
+        }
         if (viaData.length) {
-          data = viaData;
+          data = dedupePoints(viaData);
         }
       } catch (e) {
         logger.debug(e, "extractFromStreams (data/subtitle) failed");

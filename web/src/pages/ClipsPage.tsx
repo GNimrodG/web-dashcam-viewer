@@ -28,6 +28,7 @@ import FormLabel from "@mui/joy/FormLabel";
 import FormHelperText from "@mui/joy/FormHelperText";
 import WarningRoundedIcon from "@mui/icons-material/WarningRounded";
 import axios from "axios";
+import type { ClipFile } from "../api";
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -74,16 +75,7 @@ function getResolutionBadge(
   return { label: `${width}×${height}`, color: "neutral" };
 }
 
-interface Clip {
-  filename: string;
-  url: string;
-  thumbnailUrl: string;
-  size: number;
-  duration?: number;
-  width?: number;
-  height?: number;
-  createdAt: string;
-}
+type Clip = ClipFile;
 
 export default function ClipsPage() {
   const [clips, setClips] = useState<Clip[]>([]);
