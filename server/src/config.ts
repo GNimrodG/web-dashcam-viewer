@@ -22,6 +22,8 @@ export function loadConfig() {
   const SESSION_SECRET =
     process.env.SESSION_SECRET || "change-me-in-production";
   const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+  const DASHCAM_TIME_ZONE =
+    process.env.DASHCAM_TIME_ZONE || "Etc/GMT-2";
 
   if (AUTH_ENABLED) {
     if (
@@ -55,5 +57,6 @@ export function loadConfig() {
     AUTHENTIK_REDIRECT_URI,
     SESSION_SECRET,
     FRONTEND_URL,
+    DASHCAM_TIME_ZONE,
   };
 }

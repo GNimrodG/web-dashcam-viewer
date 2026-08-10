@@ -10,6 +10,7 @@ import DownloadIcon from "@mui/icons-material/Download";
 import CircularProgress from "@mui/joy/CircularProgress";
 import Alert from "@mui/joy/Alert";
 import axios from "axios";
+import { createClipShareToken } from "../api";
 
 interface Clip {
   filename: string;
@@ -42,10 +43,9 @@ export default function ClipsList() {
   const handleShare = async (filename: string) => {
     setSharingClip(filename);
     try {
-      // For now, just copy the download URL
-      const url = `${globalThis.location.origin}/api/videos/clips/${filename}`;
-      await navigator.clipboard.writeText(url);
-      alert("Clip URL copied to clipboard!");
+      const { shareUrl } = await createClipShareToken(filename);
+      await navigator.clipboard.writeText(shareUrl);
+      alert("Public share link copied to clipboard! It expires in 7 days.");
     } catch (err) {
       console.error("Failed to share clip:", err);
       alert("Failed to copy URL");

@@ -8,12 +8,23 @@ import { extractTimedGpsTrack, loadRecordedGpxTrack } from "./gps.js";
 import { reverseGeocodeDetailed } from "./geocode.js";
 import { parseFilenameForPairing } from "../utils/pairing.js";
 import type { VideoPair, VideoFile, GpsPoint } from "../types.js";
+import { parseByteRange } from "../utils/http.js";
+import {
+  getDashcamTimeZone,
+  parseDashcamFilenameTimeIso,
+} from "../utils/dashcam-time.js";
+import {
+  canonicalMediaPath,
+  compareMediaPathPriority,
+  isRoMediaPath,
+} from "../utils/media-path.js";
 
 const INDEX: Map<string, VideoPair> = new Map();
 let MEDIA_DIR: string = "";
 let CACHE_PATH: string | null = null;
 let saveTimer: NodeJS.Timeout | null = null;
 const SAVE_DEBOUNCE_MS = 1500;
+const DASHCAM_TIME_ZONE = getDashcamTimeZone();
 
 interface CachedIndexFile {
   version: number;
@@ -49,22 +60,7 @@ function parseFilenameStartTimeIso(parsed: {
   date?: string;
   time?: string;
 }): string | undefined {
-  if (!parsed.date || !parsed.time) return undefined;
-  if (parsed.date.length !== 8 || parsed.time.length < 6) return undefined;
-
-  const yyyy = Number.parseInt(parsed.date.slice(0, 4), 10);
-  const mm = Number.parseInt(parsed.date.slice(4, 6), 10);
-  const dd = Number.parseInt(parsed.date.slice(6, 8), 10);
-  const hh = Number.parseInt(parsed.time.slice(0, 2), 10);
-  const mi = Number.parseInt(parsed.time.slice(2, 4), 10);
-  const ss = Number.parseInt(parsed.time.slice(4, 6), 10);
-
-  if (![yyyy, mm, dd, hh, mi, ss].every(Number.isFinite)) return undefined;
-
-  const localTime = new Date(yyyy, mm - 1, dd, hh, mi, ss);
-  const ms = localTime.getTime();
-  if (Number.isNaN(ms)) return undefined;
-  return localTime.toISOString();
+  return parseDashcamFilenameTimeIso(parsed, DASHCAM_TIME_ZONE);
 }
 
 function parsePairIdStartTimeIso(pairId: string): string | undefined {
@@ -175,10 +171,10 @@ export async function buildIndex(mediaDir: string) {
         if (!vf) continue;
         try {
           const st = await fs.stat(vf.path);
-          vf.createdAt ||= parseFilenameStartTimeIso(
-            parseFilenameForPairing(vf.path),
-          );
-          vf.createdAt ||= st.birthtime.toISOString();
+          vf.createdAt =
+            parseFilenameStartTimeIso(parseFilenameForPairing(vf.path)) ||
+            vf.createdAt ||
+            st.birthtime.toISOString();
           if (
             vf.size !== st.size ||
             (vf.mtimeMs && Math.abs(vf.mtimeMs - st.mtimeMs) > 1)
@@ -191,12 +187,11 @@ export async function buildIndex(mediaDir: string) {
           delete pair.channels[chName];
         }
       }
-      if (!pair.startTime) {
-        pair.startTime =
-          pair.channels.front?.createdAt ||
-          pair.channels.rear?.createdAt ||
-          parsePairIdStartTimeIso(pair.id);
-      }
+      pair.startTime =
+        pair.channels.front?.createdAt ||
+        pair.channels.rear?.createdAt ||
+        parsePairIdStartTimeIso(pair.id) ||
+        pair.startTime;
       if (!pair.channels.front && !pair.channels.rear) {
         toDelete.push(pair.id);
       }
@@ -227,20 +222,31 @@ export async function buildIndex(mediaDir: string) {
     const cachedFilePaths = new Set<string>();
     for (const pair of INDEX.values()) {
       for (const vf of Object.values(pair.channels)) {
-        if (vf) cachedFilePaths.add(vf.path);
+        if (vf) cachedFilePaths.add(canonicalMediaPath(vf.path));
       }
     }
 
     const newFiles: string[] = [];
     for (const filePath of files) {
-      if (!cachedFilePaths.has(filePath)) {
-        newFiles.push(filePath);
+      if (cachedFilePaths.has(canonicalMediaPath(filePath))) continue;
+
+      const parsed = parseFilenameForPairing(filePath);
+      const indexedChannel = parsed.channel
+        ? INDEX.get(parsed.key)?.channels[parsed.channel]
+        : undefined;
+      if (
+        indexedChannel &&
+        compareMediaPathPriority(filePath, indexedChannel.path) < 0
+      ) {
+        continue;
       }
+
+      newFiles.push(filePath);
     }
 
     filesToProcess = newFiles;
     logger.info(
-      `Skipping ${files.length - newFiles.length} already-indexed files, processing ${newFiles.length} new/changed files`,
+      `Skipping ${files.length - newFiles.length} already-indexed or lower-priority files, processing ${newFiles.length} new/changed files`,
     );
   }
 
@@ -336,6 +342,20 @@ async function upsertFile(filePath: string) {
   try {
     const st = await fs.stat(filePath);
     const parsed = parseFilenameForPairing(filePath);
+
+    const directlyIndexedChannel = parsed.channel
+      ? INDEX.get(parsed.key)?.channels[parsed.channel]
+      : undefined;
+    if (
+      directlyIndexedChannel &&
+      compareMediaPathPriority(filePath, directlyIndexedChannel.path) < 0
+    ) {
+      logger.info(
+        `Ignoring lower-priority duplicate: ${filePath} (using ${directlyIndexedChannel.path})`,
+      );
+      return;
+    }
+
     const existing = findVideoFile(filePath);
     let meta: FFProbeResult | null = null;
     if (existing && existing.mtimeMs === st.mtimeMs && existing.durationSec) {
@@ -351,15 +371,15 @@ async function upsertFile(filePath: string) {
       size: st.size,
       mtimeMs: st.mtimeMs,
       createdAt:
-        existing?.createdAt ||
+        parseFilenameStartTimeIso(parsed) ||
         meta?.format?.tags?.creation_time ||
         meta?.format?.tags?.["com.apple.quicktime.creationdate"] ||
-        parseFilenameStartTimeIso(parsed) ||
+        existing?.createdAt ||
         st.birthtime.toISOString(),
       durationSec:
         existing?.durationSec || tryParseNumber(meta?.format?.duration),
       location: existing?.location ?? parseLocation(meta),
-      important: existing?.important ?? filePath.includes("RO"),
+      important: existing?.important ?? isRoMediaPath(filePath),
     };
 
     if (parsed.channel) vf.channel = parsed.channel;
@@ -405,7 +425,18 @@ async function upsertFile(filePath: string) {
     }
     if (!pair) pair = { id: pairKey, channels: {} };
     if (vf.channel) {
-      pair.channels[vf.channel] = vf;
+      const currentChannel = pair.channels[vf.channel];
+      if (
+        !currentChannel ||
+        compareMediaPathPriority(vf.path, currentChannel.path) >= 0
+      ) {
+        pair.channels[vf.channel] = vf;
+      } else {
+        logger.info(
+          `Ignoring lower-priority duplicate: ${filePath} (using ${currentChannel.path})`,
+        );
+        return;
+      }
     } else {
       pair.channels = { ...pair.channels };
     }
@@ -430,7 +461,12 @@ async function removeFile(filePath: string) {
   const parsed = parseFilenameForPairing(filePath);
   const pair = INDEX.get(parsed.key);
   if (!pair) return;
-  if (parsed.channel && pair.channels[parsed.channel]) {
+  if (
+    parsed.channel &&
+    pair.channels[parsed.channel] &&
+    canonicalMediaPath(pair.channels[parsed.channel]!.path) ===
+      canonicalMediaPath(filePath)
+  ) {
     delete pair.channels[parsed.channel];
   }
   if (!pair.channels.front && !pair.channels.rear) {
@@ -442,9 +478,10 @@ async function removeFile(filePath: string) {
 }
 
 function findVideoFile(filePath: string): VideoFile | undefined {
+  const canonicalPath = canonicalMediaPath(filePath);
   for (const pair of INDEX.values()) {
     for (const ch of Object.values(pair.channels)) {
-      if (ch?.path === filePath) return ch;
+      if (ch && canonicalMediaPath(ch.path) === canonicalPath) return ch;
     }
   }
   return undefined;
@@ -503,6 +540,36 @@ const gpsTrackPromises: Map<
   Promise<{ front?: GpsPoint[]; rear?: GpsPoint[] }>
 > = new Map();
 
+export function invalidateGpsTrackForPair(id: string): void {
+  gpsTrackPromises.delete(id);
+}
+
+export function resetGpsDerivedLocationForPair(id: string): void {
+  const pair = INDEX.get(id);
+  if (!pair) return;
+
+  pair.startLocationName = undefined;
+  pair.endLocationName = undefined;
+  pair.startCountry = undefined;
+  pair.endCountry = undefined;
+  pair.startState = undefined;
+  pair.endState = undefined;
+  pair.startCity = undefined;
+  pair.endCity = undefined;
+}
+
+export function registerStoredGpsForPair(id: string): void {
+  const pair = INDEX.get(id);
+  if (!pair) return;
+
+  resetGpsDerivedLocationForPair(id);
+  invalidateGpsTrackForPair(id);
+  for (const channel of Object.values(pair.channels)) {
+    if (channel) channel.noGps = false;
+  }
+  scheduleSave();
+}
+
 const GPS_CONCURRENT_LIMIT = Number(process.env.GPS_CONCURRENT_LIMIT) || 5;
 let currentGpsExtractions = 0;
 const gpsExtractionQueue: Array<{
@@ -512,6 +579,54 @@ const gpsExtractionQueue: Array<{
   queuedAt: number;
 }> = [];
 const processingGpsExtractions = new Set<string>();
+
+async function updatePairLocationsFromGps(
+  pair: VideoPair,
+  result: { front?: GpsPoint[]; rear?: GpsPoint[] },
+): Promise<void> {
+  const needsStart =
+    !pair.startLocationName ||
+    !pair.startCountry ||
+    !pair.startState ||
+    !pair.startCity;
+  const needsEnd =
+    !pair.endLocationName ||
+    !pair.endCountry ||
+    !pair.endState ||
+    !pair.endCity;
+  if (!needsStart && !needsEnd) return;
+
+  const combined: GpsPoint[] = [
+    ...(result.front || []),
+    ...(result.rear || []),
+  ].sort((a, b) => a.tsSec - b.tsSec);
+  if (combined.length <= 1) return;
+
+  const first = combined[0];
+  const last = combined.at(-1)!;
+  if (needsStart) {
+    const geocodedStart = await reverseGeocodeDetailed(first.lat, first.lon);
+    if (geocodedStart) {
+      pair.startLocationName ||= geocodedStart.displayName;
+      pair.startCountry ||= geocodedStart.country;
+      pair.startState ||= geocodedStart.state;
+      pair.startCity ||= geocodedStart.city;
+    }
+  }
+
+  const sufficientlyDifferent =
+    Math.abs(first.lat - last.lat) > 0.0005 ||
+    Math.abs(first.lon - last.lon) > 0.0005;
+  if (needsEnd && sufficientlyDifferent) {
+    const geocodedEnd = await reverseGeocodeDetailed(last.lat, last.lon);
+    if (geocodedEnd) {
+      pair.endLocationName ||= geocodedEnd.displayName;
+      pair.endCountry ||= geocodedEnd.country;
+      pair.endState ||= geocodedEnd.state;
+      pair.endCity ||= geocodedEnd.city;
+    }
+  }
+}
 
 function processNextInQueue() {
   if (
@@ -542,7 +657,10 @@ function startGpsExtraction(
     `Starting GPS extraction for pair: ${id} (${currentGpsExtractions}/${GPS_CONCURRENT_LIMIT})`,
   );
 
-  const p = (async () => {
+  let p!: Promise<{ front?: GpsPoint[]; rear?: GpsPoint[] }>;
+  p = (async () => {
+    // Ensure the promise is registered before any cached early-return can finish.
+    await Promise.resolve();
     try {
       logger.info("Extracting GPS track for pair: " + id);
       const pair = getVideoPairById(id);
@@ -563,7 +681,12 @@ function startGpsExtraction(
           result.rear = recorded;
           pair.channels.rear.noGps = false;
         }
-        scheduleSave();
+        try {
+          await updatePairLocationsFromGps(pair, result);
+        } catch (e) {
+          logger.warn(e, "Failed reverse geocoding for pair " + id);
+        }
+        await saveCache();
         return result;
       }
 
@@ -601,63 +724,16 @@ function startGpsExtraction(
 
       // Derive start/end geocoded names (only once if not already set)
       try {
-        const needsStart =
-          !pair.startLocationName ||
-          !pair.startCountry ||
-          !pair.startState ||
-          !pair.startCity;
-        const needsEnd =
-          !pair.endLocationName ||
-          !pair.endCountry ||
-          !pair.endState ||
-          !pair.endCity;
-        if (needsStart || needsEnd) {
-          const combined: GpsPoint[] = [
-            ...(result.front || []),
-            ...(result.rear || []),
-          ].sort((a, b) => a.tsSec - b.tsSec);
-          if (combined.length > 1) {
-            const first = combined[0];
-            const last = combined.at(-1)!;
-            if (needsStart) {
-              const g = await reverseGeocodeDetailed(first.lat, first.lon);
-              if (g) {
-                pair.startLocationName ||= g.displayName;
-                pair.startCountry ||= g.country;
-                pair.startState ||= g.state;
-                pair.startCity ||= g.city;
-              }
-            }
-            const sufficientlyDifferent =
-              Math.abs(first.lat - last.lat) > 0.0005 ||
-              Math.abs(first.lon - last.lon) > 0.0005;
-            if (needsEnd && sufficientlyDifferent) {
-              const g2 = await reverseGeocodeDetailed(last.lat, last.lon);
-              if (g2) {
-                pair.endLocationName ||= g2.displayName;
-                pair.endCountry ||= g2.country;
-                pair.endState ||= g2.state;
-                pair.endCity ||= g2.city;
-              }
-            }
-          } else {
-            if (pair.startCity && !pair.startLocationName) {
-              pair.startLocationName = `${pair.startCity}, ${pair.startCountry || "Unknown Country"}`;
-            }
-            if (pair.endCity && !pair.endLocationName) {
-              pair.endLocationName = `${pair.endCity}, ${pair.endCountry || "Unknown Country"}`;
-            }
-          }
-        }
+        await updatePairLocationsFromGps(pair, result);
       } catch (e) {
         logger.warn(e, "Failed reverse geocoding for pair " + id);
       }
-      saveCache();
+      await saveCache();
       return result;
     } finally {
       currentGpsExtractions--;
       processingGpsExtractions.delete(id);
-      gpsTrackPromises.delete(id);
+      if (gpsTrackPromises.get(id) === p) gpsTrackPromises.delete(id);
       logger.info(
         `Completed GPS extraction for pair: ${id} (${currentGpsExtractions}/${GPS_CONCURRENT_LIMIT} remaining)`,
       );
@@ -696,9 +772,14 @@ export function getGpsTrackForPair(
       `GPS extraction limit reached (${GPS_CONCURRENT_LIMIT}), queuing request for pair: ${id} (queue length: ${gpsExtractionQueue.length + 1})`,
     );
 
-    return new Promise((resolve, reject) => {
+    const queuedPromise = new Promise<{
+      front?: GpsPoint[];
+      rear?: GpsPoint[];
+    }>((resolve, reject) => {
       gpsExtractionQueue.push({ id, resolve, reject, queuedAt: Date.now() });
     });
+    gpsTrackPromises.set(id, queuedPromise);
+    return queuedPromise;
   }
 
   return startGpsExtraction(id);
@@ -779,11 +860,15 @@ export function streamVideo(
       });
     }
 
-    const [startStr, endStr] = range.replace(/bytes=/, "").split("-");
-    const start = Number.parseInt(startStr, 10);
-    const end = endStr
-      ? Number.parseInt(endStr, 10)
-      : Math.min(stat.size - 1, start + 10000000); // 10MB max if no end specified
+    const parsedRange = parseByteRange(range, stat.size);
+    if (!parsedRange) {
+      res.writeHead(416, {
+        "Content-Range": `bytes */${stat.size}`,
+        "Accept-Ranges": "bytes",
+      });
+      return res.end();
+    }
+    const { start, end } = parsedRange;
     const chunkSize = end - start + 1;
 
     // 206 Partial Content - Streaming

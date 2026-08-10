@@ -54,6 +54,21 @@ export function useGpsData(pairId: string | null): UseGpsDataResult {
     };
   }, [pairId, refreshToken]);
 
+  useEffect(() => {
+    if (!pairId) return;
+    const handleBulkGpsUpdated = (event: Event) => {
+      const { updatedIds } = (
+        event as CustomEvent<{ updatedIds?: string[] }>
+      ).detail;
+      if (updatedIds?.includes(pairId)) {
+        setRefreshToken((value) => value + 1);
+      }
+    };
+    globalThis.addEventListener("bulk-gps-updated", handleBulkGpsUpdated);
+    return () =>
+      globalThis.removeEventListener("bulk-gps-updated", handleBulkGpsUpdated);
+  }, [pairId]);
+
   const refresh = () => setRefreshToken((x) => x + 1);
 
   return { gps, loading, error, refresh };

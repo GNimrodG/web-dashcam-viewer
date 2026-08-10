@@ -28,7 +28,7 @@ import FormLabel from "@mui/joy/FormLabel";
 import FormHelperText from "@mui/joy/FormHelperText";
 import WarningRoundedIcon from "@mui/icons-material/WarningRounded";
 import axios from "axios";
-import type { ClipFile } from "../api";
+import { createClipShareToken, type ClipFile } from "../api";
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -108,9 +108,9 @@ export default function ClipsPage() {
   const handleShare = async (filename: string) => {
     setSharingClip(filename);
     try {
-      const url = `${globalThis.location.origin}/api/videos/clips/${filename}`;
-      await navigator.clipboard.writeText(url);
-      alert("Clip URL copied to clipboard!");
+      const { shareUrl } = await createClipShareToken(filename);
+      await navigator.clipboard.writeText(shareUrl);
+      alert("Public share link copied to clipboard! It expires in 7 days.");
     } catch (err) {
       console.error("Failed to share clip:", err);
       alert("Failed to copy URL");
@@ -128,7 +128,9 @@ export default function ClipsPage() {
 
     setDeletingClip(clipToDelete);
     try {
-      await axios.delete(`/api/videos/clips/${clipToDelete}`);
+      await axios.delete(
+        `/api/videos/clips/${encodeURIComponent(clipToDelete)}`,
+      );
       setClips(clips.filter((c) => c.filename !== clipToDelete));
       setClipToDelete(null);
     } catch (err) {
@@ -172,9 +174,12 @@ export default function ClipsPage() {
     setRenameError(null);
 
     try {
-      await axios.patch(`/api/videos/clips/${clipToRename}`, {
-        newFilename: finalName,
-      });
+      await axios.patch(
+        `/api/videos/clips/${encodeURIComponent(clipToRename)}`,
+        {
+          newFilename: finalName,
+        },
+      );
 
       // Update clips list
       setClips(
@@ -183,8 +188,8 @@ export default function ClipsPage() {
             ? {
                 ...c,
                 filename: finalName,
-                url: `/api/videos/clips/${finalName}`,
-                thumbnailUrl: `/api/videos/clips/${finalName}/thumbnail`,
+                url: `/api/videos/clips/${encodeURIComponent(finalName)}`,
+                thumbnailUrl: `/api/videos/clips/${encodeURIComponent(finalName)}/thumbnail`,
               }
             : c,
         ),

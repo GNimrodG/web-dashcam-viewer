@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import MapView from "../components/MapView";
 import { Player } from "../components/Player";
@@ -13,6 +13,20 @@ interface OutletContext {
 export default function MainPage() {
   const { activePair } = useOutletContext<OutletContext>();
   const [currentTimeSec, setCurrentTimeSec] = useState<number>(0);
+  const [seekRequest, setSeekRequest] = useState<{
+    timeSec: number;
+    requestId: number;
+  }>();
+
+  useEffect(() => {
+    setCurrentTimeSec(0);
+    setSeekRequest(undefined);
+  }, [activePair?.id]);
+
+  const handleMapSeek = useCallback((timeSec: number) => {
+    setCurrentTimeSec(timeSec);
+    setSeekRequest({ timeSec, requestId: Date.now() });
+  }, []);
 
   return (
     <Box
@@ -33,8 +47,16 @@ export default function MainPage() {
         height: "100dvh",
         gap: 1,
       }}>
-      <Player pair={activePair} onTimeUpdate={setCurrentTimeSec} />
-      <MapView pair={activePair} currentTimeSec={currentTimeSec} />
+      <Player
+        pair={activePair}
+        onTimeUpdate={setCurrentTimeSec}
+        seekRequest={seekRequest}
+      />
+      <MapView
+        pair={activePair}
+        currentTimeSec={currentTimeSec}
+        onSeek={handleMapSeek}
+      />
     </Box>
   );
 }

@@ -34,10 +34,12 @@ import Radio from "@mui/joy/Radio";
 import RadioGroup from "@mui/joy/RadioGroup";
 import type { Mark } from "@mui/base/useSlider";
 import { useHotkeys } from "@mantine/hooks";
+import { formatPairTime } from "../utils/recording-time";
 
 interface PlayerProps {
   pair: VideoPair | null;
   onTimeUpdate?: (t: number) => void;
+  seekRequest?: { timeSec: number; requestId: number };
 }
 
 function formatTime(seconds: number) {
@@ -83,8 +85,14 @@ function getMinMarksForLength(duration: number): Mark[] {
   return marks;
 }
 
-export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
+export function Player({
+  pair,
+  onTimeUpdate,
+  seekRequest,
+}: Readonly<PlayerProps>) {
   const [isPlaying, setIsPlaying] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const lastAudibleVolumeRef = useRef(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fullscreenCamera, setFullscreenCamera] = useState<
     "front" | "rear" | null
@@ -395,6 +403,10 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
     setIsPlaying(false);
   }, [pair?.id]);
 
+  useEffect(() => {
+    if (frontRef.current) frontRef.current.volume = volume;
+  }, [volume, pair?.id]);
+
   const onPlayBoth = () => {
     const front = frontRef.current;
     const rear = rearRef.current;
@@ -439,7 +451,7 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
   useHotkeys([["space", () => (isPlaying ? onPauseBoth() : onPlayBoth())]]);
 
   useEffect(() => {
-    const v = frontRef.current;
+    const v = frontRef.current || rearRef.current;
     if (!v || !onTimeUpdate) return;
     setIsPlaying(false);
 
@@ -451,6 +463,17 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
       v.removeEventListener("seeked", handler);
     };
   }, [onTimeUpdate, pair?.id]);
+
+  useEffect(() => {
+    if (!seekRequest) return;
+    const target = Math.max(
+      0,
+      Math.min(seekRequest.timeSec, pair?.durationSec || seekRequest.timeSec),
+    );
+    if (frontRef.current) frontRef.current.currentTime = target;
+    if (rearRef.current) rearRef.current.currentTime = target;
+    onTimeUpdate?.(target);
+  }, [seekRequest, pair?.durationSec, onTimeUpdate]);
 
   useEffect(() => {
     const front = frontRef.current;
@@ -537,10 +560,12 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
 
         <Stack direction="row" spacing={1} alignItems="center">
           <ButtonGroup>
-            <IconButton onClick={isPlaying ? onPauseBoth : onPlayBoth}>
+            <IconButton
+              aria-label={isPlaying ? "Pause videos" : "Play videos"}
+              onClick={isPlaying ? onPauseBoth : onPlayBoth}>
               {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
             </IconButton>
-            <IconButton onClick={onStopBoth}>
+            <IconButton aria-label="Stop videos" onClick={onStopBoth}>
               <StopIcon />
             </IconButton>
           </ButtonGroup>
@@ -562,24 +587,25 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
             {/* Volume Control */}
             <Stack direction="row" spacing={0.5} alignItems="center">
               <IconButton
+                aria-label={volume > 0 ? "Mute audio" : "Unmute audio"}
                 size="sm"
                 color="neutral"
                 onClick={() => {
-                  if (frontRef.current)
-                    frontRef.current.volume =
-                      frontRef.current.volume > 0 ? 0 : 100;
+                  if (volume > 0) {
+                    lastAudibleVolumeRef.current = volume;
+                    setVolume(0);
+                  } else {
+                    setVolume(lastAudibleVolumeRef.current || 1);
+                  }
                 }}>
-                {(frontRef.current?.volume ?? 100) > 0 ? (
-                  <VolumeUpIcon />
-                ) : (
-                  <VolumeOffIcon />
-                )}
+                {volume > 0 ? <VolumeUpIcon /> : <VolumeOffIcon />}
               </IconButton>
               <Slider
-                value={frontRef.current?.volume || 0}
+                value={volume}
                 onChange={(_, newValue) => {
-                  if (frontRef.current)
-                    frontRef.current.volume = newValue as number;
+                  const nextVolume = newValue as number;
+                  if (nextVolume > 0) lastAudibleVolumeRef.current = nextVolume;
+                  setVolume(nextVolume);
                 }}
                 min={0}
                 max={1}
@@ -592,6 +618,7 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
 
             {/* Create Clip Button */}
             <IconButton
+              aria-label="Create clip"
               size="sm"
               color="primary"
               variant="outlined"
@@ -648,7 +675,7 @@ export function Player({ pair, onTimeUpdate }: Readonly<PlayerProps>) {
               </Menu>
             </Dropdown>
 
-            <Typography level="title-md">{pair.id}</Typography>
+            <Typography level="title-md">{formatPairTime(pair)}</Typography>
           </Stack>
         </Stack>
       </Stack>

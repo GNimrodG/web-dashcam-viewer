@@ -11,6 +11,7 @@ import {
   downloadTextFile,
   parseGpxTrackPoints,
 } from "../utils/gpx";
+import { formatRecordingTime } from "../utils/recording-time";
 
 type Props = {
   clipLabel: string;
@@ -96,7 +97,7 @@ export default function GpxCropper({
 
       <Typography level="body-xs" sx={{ color: "text.tertiary" }}>
         {clipStartAt && clipEndAt
-          ? `${new Date(clipStartAt).toLocaleString()} - ${new Date(clipEndAt).toLocaleString()}`
+          ? `${formatRecordingTime(clipStartAt)} - ${formatRecordingTime(clipEndAt)}`
           : "Clip timing metadata unavailable"}
       </Typography>
 

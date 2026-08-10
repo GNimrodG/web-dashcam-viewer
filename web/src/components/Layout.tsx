@@ -61,7 +61,13 @@ export default function Layout() {
         onSelectPair={handleSelectPair}
         selectedPairId={activePair?.id}
       />
-      <Outlet context={{ activePair, setActivePair }} />
+      <Outlet
+        context={{
+          activePair,
+          setActivePair,
+          selectPair: handleSelectPair,
+        }}
+      />
     </Box>
   );
 }

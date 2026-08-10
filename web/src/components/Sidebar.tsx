@@ -13,6 +13,7 @@ import {
   useRef,
   Fragment,
   type FunctionComponent,
+  type ChangeEvent,
 } from "react";
 import Typography from "@mui/joy/Typography";
 import { closeSidebar } from "../utils";
@@ -42,12 +43,13 @@ import EditLocationIcon from "@mui/icons-material/EditLocation";
 import {
   VideoPair,
   triggerReindex,
-  getCurrentUser,
+  getAuthStatus,
   loginUrl,
   logout,
   backfillLocations,
   type User,
   fetchPair,
+  bulkReplaceRecordedGpx,
 } from "../api";
 import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import LoginIcon from "@mui/icons-material/Login";
@@ -56,24 +58,18 @@ import Button from "@mui/joy/Button";
 import ContentCutIcon from "@mui/icons-material/ContentCut";
 import { Link, useNavigate } from "react-router-dom";
 import UserIcon from "@mui/icons-material/Person";
-
-/**
- * Parse a pair ID to get timestamp in seconds since epoch
- * @param id Video pair ID in yyyymmdd_hhmmss format
- * @returns Timestamp in seconds, or null if parsing fails
- */
-function parseTimestamp(id: string): number | null {
-  const [datePart, timePart] = id.split("_");
-  if (!datePart || !timePart || datePart.length !== 8 || timePart.length < 6)
-    return null;
-  const yyyy = Number.parseInt(datePart.slice(0, 4), 10);
-  const mm = Number.parseInt(datePart.slice(4, 6), 10);
-  const dd = Number.parseInt(datePart.slice(6, 8), 10);
-  const hh = Number.parseInt(timePart.slice(0, 2), 10);
-  const mi = Number.parseInt(timePart.slice(2, 4), 10);
-  const ss = Number.parseInt(timePart.slice(4, 6), 10);
-  return Math.floor(new Date(yyyy, mm - 1, dd, hh, mi, ss).getTime() / 1000);
-}
+import UploadFileIcon from "@mui/icons-material/UploadFile";
+import CloseIcon from "@mui/icons-material/Close";
+import Alert from "@mui/joy/Alert";
+import MapIcon from "@mui/icons-material/Map";
+import Modal from "@mui/joy/Modal";
+import ModalDialog from "@mui/joy/ModalDialog";
+import LinearProgress from "@mui/joy/LinearProgress";
+import {
+  formatPairTime,
+  getPairDisplayDate,
+  getPairStartTime,
+} from "../utils/recording-time";
 
 /**
  * Check if a pair is important (has at least one important channel)
@@ -82,25 +78,6 @@ function parseTimestamp(id: string): number | null {
  */
 function isImportant(pair: VideoPair): boolean {
   return Object.values(pair.channels).some((ch) => ch?.important);
-}
-
-/**
- * Format a video pair ID from yyyymmdd_hhmmss to a more readable format.
- * @param id Video pair ID in yyyymmdd_hhmmss format
- * @returns Formatted video pair ID (YYYY-MM-DD HH:MM:SS)
- */
-function formatPairId(id: string): string {
-  // Expect yyyymmdd_hhmmss
-  const [datePart, timePart] = id.split("_");
-  if (!datePart || !timePart || datePart.length !== 8 || timePart.length < 6)
-    return id;
-  const yyyy = datePart.slice(0, 4);
-  const mm = datePart.slice(4, 6);
-  const dd = datePart.slice(6, 8);
-  const hh = timePart.slice(0, 2);
-  const mi = timePart.slice(2, 4);
-  const ss = timePart.slice(4, 6);
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
 interface SidebarProps {
@@ -116,16 +93,31 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
   const [search, setSearch] = useState("");
   const [isReindexing, setIsReindexing] = useState(false);
   const [isGeocoding, setIsGeocoding] = useState(false);
+  const [isBulkGpxUploading, setIsBulkGpxUploading] = useState(false);
+  const [bulkGpxProgress, setBulkGpxProgress] = useState<{
+    fileName: string;
+    phase: "reading" | "uploading" | "processing";
+    percent?: number;
+  } | null>(null);
+  const [bulkGpxStatus, setBulkGpxStatus] = useState<{
+    color: "success" | "danger";
+    message: string;
+  } | null>(null);
   const [user, setUser] = useState<User | null>(null);
+  const [authEnabled, setAuthEnabled] = useState(false);
   const [gpsQueueModalOpen, setGpsQueueModalOpen] = useState(false);
   const [locationModalOpen, setLocationModalOpen] = useState(false);
   const [selectedPairForLocation, setSelectedPairForLocation] =
     useState<VideoPair | null>(null);
   const navigate = useNavigate();
   const selectedItemRef = useRef<HTMLDivElement | null>(null);
+  const bulkGpxInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    getCurrentUser().then(setUser);
+    getAuthStatus().then((status) => {
+      setUser(status.user);
+      setAuthEnabled(status.authEnabled);
+    });
   }, []);
 
   // Scroll to selected item when sidebar loads or selection changes
@@ -142,11 +134,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
   useEffect(() => {
     const handleGpsUpdated = async (e: Event) => {
       const customEvent = e as CustomEvent<{ pairId: string }>;
-      console.log(
-        "GPS data empty detected for pair:",
-        customEvent.detail.pairId,
-        "- updating pair data",
-      );
+      console.log("GPS data updated for pair:", customEvent.detail.pairId);
       // Delay to let server finish updating the index, then fetch updated pair
       setTimeout(async () => {
         try {
@@ -192,6 +180,59 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
     }
   };
 
+  const handleBulkGpxFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (
+      !globalThis.confirm(
+        `Overwrite GPS for every recording covered by ${file.name}?`,
+      )
+    ) {
+      return;
+    }
+
+    setIsBulkGpxUploading(true);
+    setBulkGpxProgress({ fileName: file.name, phase: "reading" });
+    setBulkGpxStatus(null);
+    try {
+      const gpxXml = await file.text();
+      setBulkGpxProgress({
+        fileName: file.name,
+        phase: "uploading",
+        percent: 0,
+      });
+      const result = await bulkReplaceRecordedGpx(gpxXml, (percent) => {
+        setBulkGpxProgress({
+          fileName: file.name,
+          phase: percent === 100 ? "processing" : "uploading",
+          ...(percent === null ? {} : { percent }),
+        });
+      });
+      setBulkGpxStatus({
+        color: result.failed ? "danger" : "success",
+        message: `Updated ${result.updated} of ${result.totalRecordings} recordings. Skipped ${result.skipped}; failed ${result.failed}.`,
+      });
+      refresh();
+      globalThis.dispatchEvent(
+        new CustomEvent("bulk-gps-updated", {
+          detail: { updatedIds: result.updatedIds },
+        }),
+      );
+    } catch (error: any) {
+      setBulkGpxStatus({
+        color: "danger",
+        message:
+          error?.response?.data?.error ||
+          error?.message ||
+          "Bulk GPX upload failed.",
+      });
+    } finally {
+      setIsBulkGpxUploading(false);
+      setBulkGpxProgress(null);
+    }
+  };
+
   const handleLogout = async () => {
     await logout();
     setUser(null);
@@ -216,6 +257,8 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
     return pairs.filter(
       (p) =>
         (idSearch && p.id.toLowerCase().includes(idSearch)) ||
+        (idSearch &&
+          formatPairTime(p).replaceAll(/\D/g, "").includes(idSearch)) ||
         (placeSearch &&
           p.startLocationName?.toLowerCase().includes(placeSearch)) ||
         (placeSearch && p.endLocationName?.toLowerCase().includes(placeSearch)),
@@ -227,17 +270,15 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
     type Grouped = Record<string, Record<string, Record<string, typeof pairs>>>;
     const g: Grouped = {};
     for (const p of filteredPairs) {
-      const datePart = p.id.split("_")[0] || ""; // yyyymmdd
-      if (datePart.length !== 8) {
+      const displayDate = getPairDisplayDate(p);
+      if (!displayDate) {
         g.Unknown ||= {};
         g.Unknown.Unknown ||= {};
         g.Unknown.Unknown.Unknown ||= [];
         g.Unknown.Unknown.Unknown.push(p);
         continue;
       }
-      const year = datePart.slice(0, 4);
-      const month = datePart.slice(4, 6);
-      const day = datePart.slice(6, 8);
+      const [year, month, day] = displayDate.split("-");
       g[year] ||= {};
       g[year][month] ||= {};
       g[year][month][day] ||= [];
@@ -280,7 +321,9 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
       const current = sorted[i];
       if (!isImportant(current)) continue;
 
-      const currentTimestamp = parseTimestamp(current.id);
+      const currentTimestampMs = getPairStartTime(current);
+      const currentTimestamp =
+        currentTimestampMs === null ? null : currentTimestampMs / 1000;
       if (currentTimestamp === null) continue;
 
       // Check if next pair is consecutive and important
@@ -289,7 +332,9 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
         next &&
         isImportant(next) &&
         (() => {
-          const nextTimestamp = parseTimestamp(next.id);
+          const nextTimestampMs = getPairStartTime(next);
+          const nextTimestamp =
+            nextTimestampMs === null ? null : nextTimestampMs / 1000;
           if (nextTimestamp === null) return false;
           const diff = Math.abs(nextTimestamp - currentTimestamp);
           // Allow 4-6 minutes (240-360 seconds) for typical 5-min recordings
@@ -302,7 +347,9 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
         prev &&
         isImportant(prev) &&
         (() => {
-          const prevTimestamp = parseTimestamp(prev.id);
+          const prevTimestampMs = getPairStartTime(prev);
+          const prevTimestamp =
+            prevTimestampMs === null ? null : prevTimestampMs / 1000;
           if (prevTimestamp === null) return false;
           const diff = Math.abs(currentTimestamp - prevTimestamp);
           return diff >= 240 && diff <= 360;
@@ -325,6 +372,40 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
 
     return result;
   }, [filteredPairs]);
+
+  const managementMenu = (
+    <Dropdown>
+      <MenuButton
+        slots={{ root: IconButton }}
+        slotProps={{ root: { variant: "outlined", color: "neutral" } }}>
+        <MoreVertIcon />
+      </MenuButton>
+      <Menu placement="top-start" size="sm" sx={{ zIndex: 10001 }}>
+        <MenuItem onClick={handleReindex} disabled={isReindexing}>
+          <FolderOpenIcon sx={{ mr: 1 }} />
+          {isReindexing ? "Re-indexing..." : "Scan for new files"}
+        </MenuItem>
+        <MenuItem onClick={handleGeocodeBackfill} disabled={isGeocoding}>
+          <SearchRoundedIcon sx={{ mr: 1 }} />
+          {isGeocoding ? "Geocoding..." : "Backfill locations"}
+        </MenuItem>
+        <MenuItem
+          onClick={() => bulkGpxInputRef.current?.click()}
+          disabled={isBulkGpxUploading}>
+          <UploadFileIcon sx={{ mr: 1 }} />
+          {isBulkGpxUploading ? "Applying GPX..." : "Apply GPX to recordings"}
+        </MenuItem>
+        <MenuItem onClick={() => setGpsQueueModalOpen(true)}>
+          <GpsOffIcon sx={{ mr: 1 }} />
+          GPS Extraction Queue
+        </MenuItem>
+        <MenuItem onClick={refresh} disabled={loading}>
+          <RefreshIcon sx={{ mr: 1 }} />
+          {loading ? "Refreshing..." : "Refresh list"}
+        </MenuItem>
+      </Menu>
+    </Dropdown>
+  );
 
   return (
     <Sheet
@@ -403,38 +484,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
               sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
               {user.preferred_username || user.name || user.email}
             </Typography>
-            <Dropdown>
-              <MenuButton
-                slots={{ root: IconButton }}
-                slotProps={{
-                  root: {
-                    variant: "outlined",
-                    color: "neutral",
-                  },
-                }}>
-                <MoreVertIcon />
-              </MenuButton>
-              <Menu placement="top-start" size="sm" sx={{ zIndex: 10001 }}>
-                <MenuItem onClick={handleReindex} disabled={isReindexing}>
-                  <FolderOpenIcon sx={{ mr: 1 }} />
-                  {isReindexing ? "Re-indexing..." : "Scan for new files"}
-                </MenuItem>
-                <MenuItem
-                  onClick={handleGeocodeBackfill}
-                  disabled={isGeocoding}>
-                  <SearchRoundedIcon sx={{ mr: 1 }} />
-                  {isGeocoding ? "Geocoding..." : "Backfill locations"}
-                </MenuItem>
-                <MenuItem onClick={() => setGpsQueueModalOpen(true)}>
-                  <GpsOffIcon sx={{ mr: 1 }} />
-                  GPS Extraction Queue
-                </MenuItem>
-                <MenuItem onClick={refresh} disabled={loading}>
-                  <RefreshIcon sx={{ mr: 1 }} />
-                  {loading ? "Refreshing..." : "Refresh list"}
-                </MenuItem>
-              </Menu>
-            </Dropdown>
+            {managementMenu}
             <IconButton
               size="sm"
               variant="plain"
@@ -443,7 +493,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
               <LogoutIcon />
             </IconButton>
           </Box>
-        ) : (
+        ) : authEnabled ? (
           <Button
             size="sm"
             variant="outlined"
@@ -453,11 +503,93 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
             href={loginUrl()}>
             Login
           </Button>
+        ) : (
+          <Box sx={{ display: "flex", gap: 1, alignItems: "center", flex: 1 }}>
+            <Typography level="body-sm" sx={{ flex: 1 }}>
+              Public mode
+            </Typography>
+            {managementMenu}
+          </Box>
         )}
       </Box>
 
+      <input
+        ref={bulkGpxInputRef}
+        hidden
+        type="file"
+        accept=".gpx,application/gpx+xml,application/xml,text/xml"
+        onChange={handleBulkGpxFile}
+      />
+
+      {bulkGpxStatus && (
+        <Alert
+          color={bulkGpxStatus.color}
+          size="sm"
+          endDecorator={
+            <IconButton
+              size="sm"
+              variant="plain"
+              color={bulkGpxStatus.color}
+              onClick={() => setBulkGpxStatus(null)}>
+              <CloseIcon />
+            </IconButton>
+          }>
+          {bulkGpxStatus.message}
+        </Alert>
+      )}
+
+      <Modal open={isBulkGpxUploading}>
+        <ModalDialog
+          aria-labelledby="bulk-gpx-progress-title"
+          sx={{ width: "min(420px, calc(100vw - 32px))" }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+            <CircularProgress size="md" />
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography id="bulk-gpx-progress-title" level="title-md">
+                Applying GPX to recordings
+              </Typography>
+              <Typography
+                level="body-sm"
+                noWrap
+                title={bulkGpxProgress?.fileName}>
+                {bulkGpxProgress?.fileName}
+              </Typography>
+            </Box>
+          </Box>
+          <LinearProgress
+            determinate={
+              bulkGpxProgress?.phase === "uploading" &&
+              bulkGpxProgress.percent !== undefined
+            }
+            value={bulkGpxProgress?.percent || 0}
+            sx={{ mt: 1 }}
+          />
+          <Typography level="body-sm">
+            {bulkGpxProgress?.phase === "reading" && "Reading GPX file…"}
+            {bulkGpxProgress?.phase === "uploading" &&
+              `Uploading… ${bulkGpxProgress.percent ?? 0}%`}
+            {bulkGpxProgress?.phase === "processing" &&
+              "Matching GPS points and updating recordings…"}
+          </Typography>
+          <Typography level="body-xs" sx={{ color: "text.tertiary" }}>
+            Keep this page open until the import finishes.
+          </Typography>
+        </ModalDialog>
+      </Modal>
+
       {/* Navigation Links */}
       <List size="sm" sx={{ flexGrow: 0 }}>
+        <ListItem sx={{ borderRadius: 2 }}>
+          <ListItemButton
+            component={Link}
+            to="/recordings-map"
+            onClick={() => onSelectPair?.(null)}>
+            <ListItemDecorator>
+              <MapIcon />
+            </ListItemDecorator>
+            <ListItemContent>Recording Map</ListItemContent>
+          </ListItemButton>
+        </ListItem>
         <ListItem sx={{ borderRadius: 2 }}>
           <ListItemButton
             component={Link}
@@ -678,7 +810,11 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                 return (
                                   <ListItem
                                     key={p.id + "-pair"}
-                                    ref={p.id === selectedPairId ? selectedItemRef : null}
+                                    ref={
+                                      p.id === selectedPairId
+                                        ? selectedItemRef
+                                        : null
+                                    }
                                     sx={{
                                       position: "relative",
                                       ...(consecutiveInfo && {
@@ -768,7 +904,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                             gap: 0.5,
                                           }}>
                                           <Typography level="title-sm">
-                                            {formatPairId(p.id)}
+                                            {formatPairTime(p)}
                                           </Typography>
                                           {(!p.channels.front ||
                                             p.channels.front?.noGps) &&

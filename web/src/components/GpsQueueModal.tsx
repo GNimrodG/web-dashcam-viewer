@@ -10,6 +10,7 @@ import CircularProgress from "@mui/joy/CircularProgress";
 import { useEffect, useState, type FunctionComponent, useRef } from "react";
 import { type GpsQueueStatus } from "../api";
 import moment from "moment";
+import { formatRecordingTime, parsePairIdTime } from "../utils/recording-time";
 
 interface GpsQueueModalProps {
   open: boolean;
@@ -68,16 +69,8 @@ const GpsQueueModal: FunctionComponent<GpsQueueModalProps> = ({
   }, [open]);
 
   const formatPairId = (id: string) => {
-    const [datePart, timePart] = id.split("_");
-    if (!datePart || !timePart || datePart.length !== 8 || timePart.length < 6)
-      return id;
-    const yyyy = datePart.slice(0, 4);
-    const mm = datePart.slice(4, 6);
-    const dd = datePart.slice(6, 8);
-    const hh = timePart.slice(0, 2);
-    const mi = timePart.slice(2, 4);
-    const ss = timePart.slice(4, 6);
-    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+    const timestamp = parsePairIdTime(id);
+    return timestamp === null ? id : formatRecordingTime(timestamp);
   };
 
   return (

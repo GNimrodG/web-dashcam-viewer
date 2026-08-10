@@ -74,6 +74,21 @@ export interface GPSData {
   rear?: GPSPoint[];
 }
 
+export interface GpsMapTrack {
+  id: string;
+  startTime?: string;
+  durationSec?: number;
+  startLocationName?: string;
+  endLocationName?: string;
+  points: Array<Pick<GPSPoint, "tsSec" | "lat" | "lon">>;
+}
+
+export interface GpsMapCatalog {
+  totalRecordings: number;
+  recordingsWithGps: number;
+  tracks: GpsMapTrack[];
+}
+
 export async function storeRecordedGpx(
   id: string,
   gpxXml: string,
@@ -82,8 +97,47 @@ export async function storeRecordedGpx(
   return data;
 }
 
+export interface BulkGpxResult {
+  success: boolean;
+  totalPoints: number;
+  totalRecordings: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  updatedIds: string[];
+  failures: Array<{ id: string; error: string }>;
+}
+
+export async function bulkReplaceRecordedGpx(
+  gpxXml: string,
+  onUploadProgress?: (percent: number | null) => void,
+): Promise<BulkGpxResult> {
+  const { data } = await api.post<BulkGpxResult>(
+    "/videos/gps/gpx/bulk",
+    gpxXml,
+    {
+      headers: { "Content-Type": "application/gpx+xml" },
+      onUploadProgress: (event) => {
+        onUploadProgress?.(
+          event.total
+            ? Math.min(100, Math.round((event.loaded / event.total) * 100))
+            : null,
+        );
+      },
+    },
+  );
+  return data;
+}
+
 export async function fetchPairs(): Promise<VideoPair[]> {
   const { data } = await api.get("/videos");
+  return data;
+}
+
+export async function fetchGpsMap(
+  signal?: AbortSignal,
+): Promise<GpsMapCatalog> {
+  const { data } = await api.get<GpsMapCatalog>("/videos/gps-map", { signal });
   return data;
 }
 
@@ -151,14 +205,19 @@ export interface User {
   preferred_username?: string;
 }
 
+export interface AuthStatus {
+  user: User | null;
+  authEnabled: boolean;
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  const { data } = await api.get<AuthStatus>("/auth/me");
+  return data;
+}
+
 export async function getCurrentUser(): Promise<User | null> {
-  try {
-    const { data } = await api.get("/auth/me");
-    return data.user;
-  } catch {
-    // Not authenticated
-    return null;
-  }
+  const { user } = await getAuthStatus();
+  return user;
 }
 
 export function loginUrl(): string {
@@ -194,6 +253,17 @@ export async function createShareToken(
     clipStartTime,
     clipEndTime,
     clipChannels,
+    expiresInDays,
+  });
+  return data;
+}
+
+export async function createClipShareToken(
+  filename: string,
+  expiresInDays = 7,
+): Promise<ShareToken> {
+  const { data } = await api.post("/shares/clip", {
+    filename,
     expiresInDays,
   });
   return data;

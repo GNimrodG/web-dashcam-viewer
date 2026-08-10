@@ -92,7 +92,7 @@ app.use(
     },
   }),
 );
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "200mb" }));
 app.use(
   cors({
     origin: true,
@@ -107,10 +107,9 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 await buildIndex(config.MEDIA_DIR);
 watchMediaFolder(config.MEDIA_DIR);
 
-// Auth routes (always available, but only functional if AUTH_ENABLED)
-if (config.AUTH_ENABLED) {
-  app.use("/api/auth", authRouter);
-}
+// Auth status is always available so the frontend can distinguish public mode
+// from an unauthenticated protected deployment.
+app.use("/api/auth", authRouter);
 
 // Public share routes (no auth required)
 app.use("/api/shares", sharesRouter);

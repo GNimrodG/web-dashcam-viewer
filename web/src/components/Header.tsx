@@ -8,13 +8,17 @@ import MenuIcon from "@mui/icons-material/Menu";
 import LoginIcon from "@mui/icons-material/Login";
 import LogoutIcon from "@mui/icons-material/Logout";
 import { toggleSidebar } from "../utils";
-import { getCurrentUser, loginUrl, logout, type User } from "../api";
+import { getAuthStatus, loginUrl, logout, type User } from "../api";
 
 const Header: FunctionComponent = () => {
   const [user, setUser] = useState<User | null>(null);
+  const [authEnabled, setAuthEnabled] = useState(false);
 
   useEffect(() => {
-    getCurrentUser().then(setUser);
+    getAuthStatus().then((status) => {
+      setUser(status.user);
+      setAuthEnabled(status.authEnabled);
+    });
   }, []);
 
   const handleLogout = async () => {
@@ -56,7 +60,7 @@ const Header: FunctionComponent = () => {
         size="sm">
         <MenuIcon />
       </IconButton>
-      
+
       {user ? (
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <Typography level="body-sm">{user.name || user.email}</Typography>
@@ -64,7 +68,7 @@ const Header: FunctionComponent = () => {
             <LogoutIcon />
           </IconButton>
         </div>
-      ) : (
+      ) : authEnabled ? (
         <Button
           size="sm"
           variant="plain"
@@ -73,7 +77,7 @@ const Header: FunctionComponent = () => {
           href={loginUrl()}>
           Login
         </Button>
-      )}
+      ) : null}
     </Sheet>
   );
 };

@@ -12,12 +12,22 @@ import IconButton from "@mui/joy/IconButton";
 import DownloadIcon from "@mui/icons-material/Download";
 import Tooltip from "@mui/joy/Tooltip";
 import VideoGpxUploader from "./VideoGpxUploader";
+import {
+  buildSpeedSegments,
+  SPEED_COLOR_STOPS,
+  speedColor,
+} from "../utils/speed";
 
 type Props = {
   pair: VideoPair | null;
   currentTimeSec?: number;
+  onSeek?: (timeSec: number) => void;
 };
-export default function MapView({ pair, currentTimeSec }: Readonly<Props>) {
+export default function MapView({
+  pair,
+  currentTimeSec,
+  onSeek,
+}: Readonly<Props>) {
   const canAutoCrop =
     !!pair?.startTime && Number.isFinite(pair?.durationSec ?? Number.NaN);
   const markerRef = useRef<L.Layer | null>(null);
@@ -28,13 +38,7 @@ export default function MapView({ pair, currentTimeSec }: Readonly<Props>) {
   const { gps, loading, error, refresh } = useGpsData(pair?.id || null);
 
   useEffect(() => {
-    if (
-      loading ||
-      error ||
-      !pair ||
-      (!gps?.front?.length && !gps?.rear?.length)
-    )
-      return;
+    if (loading || error || !pair) return;
     const map = mapRef.current!;
     let markers: L.Layer[] = [];
 
@@ -46,8 +50,84 @@ export default function MapView({ pair, currentTimeSec }: Readonly<Props>) {
         lon: p.lon,
       }));
       const coords = points.map((p) => [p.lat, p.lon] as [number, number]);
-      let layer = L.polyline(coords, { color: "red" }).addTo(map);
-      markers.push(layer);
+      const routeLayer = L.featureGroup().addTo(map);
+      for (const segment of buildSpeedSegments(linePointsRef.current)) {
+        const segmentLayer = L.polyline(
+          [
+            [segment.from.lat, segment.from.lon],
+            [segment.to.lat, segment.to.lon],
+          ],
+          {
+            color: speedColor(segment.speedKph),
+            weight: 7,
+            opacity: 0.9,
+            interactive: !!onSeek,
+            bubblingMouseEvents: false,
+          },
+        )
+          .bindTooltip(
+            `${segment.speedKph.toFixed(0)} km/h${onSeek ? " · Click to seek" : ""}`,
+            {
+            sticky: true,
+            },
+          )
+          .addTo(routeLayer);
+        if (onSeek) {
+          segmentLayer.on("click", (event) => {
+            const start = map.latLngToLayerPoint([
+              segment.from.lat,
+              segment.from.lon,
+            ]);
+            const end = map.latLngToLayerPoint([
+              segment.to.lat,
+              segment.to.lon,
+            ]);
+            const clicked = map.latLngToLayerPoint(event.latlng);
+            const deltaX = end.x - start.x;
+            const deltaY = end.y - start.y;
+            const lengthSquared = deltaX ** 2 + deltaY ** 2;
+            const fraction =
+              lengthSquared === 0
+                ? 0
+                : Math.max(
+                    0,
+                    Math.min(
+                      1,
+                      ((clicked.x - start.x) * deltaX +
+                        (clicked.y - start.y) * deltaY) /
+                        lengthSquared,
+                    ),
+                  );
+            onSeek(
+              segment.from.tsSec +
+                (segment.to.tsSec - segment.from.tsSec) * fraction,
+            );
+          });
+          const pathElement = segmentLayer.getElement();
+          if (pathElement) {
+            const midpointTime =
+              segment.from.tsSec +
+              (segment.to.tsSec - segment.from.tsSec) / 2;
+            pathElement.style.cursor = "pointer";
+            pathElement.setAttribute("role", "button");
+            pathElement.setAttribute("tabindex", "0");
+            pathElement.setAttribute(
+              "aria-label",
+              `Seek video to ${midpointTime.toFixed(1)} seconds`,
+            );
+            pathElement.addEventListener("keydown", (keyboardEvent) => {
+              if (
+                keyboardEvent.key === "Enter" ||
+                keyboardEvent.key === " "
+              ) {
+                keyboardEvent.preventDefault();
+                onSeek(midpointTime);
+              }
+            });
+          }
+        }
+      }
+      markers.push(routeLayer);
       markerRef.current = L.circleMarker(coords[0], {
         radius: 6,
         color: "#1976d2",
@@ -55,7 +135,8 @@ export default function MapView({ pair, currentTimeSec }: Readonly<Props>) {
         fillOpacity: 0.9,
       }).addTo(map);
       markers.push(markerRef.current);
-      map.fitBounds(layer.getBounds(), { padding: [20, 20] });
+      const bounds = L.latLngBounds(coords);
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20] });
     } else if (pair) {
       // Fallback single geotag if available
       const loc = pair.channels.front?.location || pair.channels.rear?.location;
@@ -73,7 +154,7 @@ export default function MapView({ pair, currentTimeSec }: Readonly<Props>) {
       linePointsRef.current = [];
       markerRef.current = null;
     };
-  }, [gps, pair]);
+  }, [gps, pair, loading, error, onSeek]);
 
   // Update moving marker when time changes
   useEffect(() => {
@@ -194,23 +275,74 @@ export default function MapView({ pair, currentTimeSec }: Readonly<Props>) {
 
       {/* Download GPX Button */}
       {!!pair && !!gps && !!(gps.front?.length || gps.rear?.length) && (
-        <Tooltip title="Download GPS track as GPX" placement="left">
-          <IconButton
-            variant="solid"
-            color="primary"
-            size="sm"
-            sx={{
-              position: "absolute",
-              top: 10,
-              right: 10,
-              zIndex: 1000,
-            }}
-            onClick={() => {
-              window.open(`/api/videos/${pair.id}/gps/gpx`, "_blank");
-            }}>
-            <DownloadIcon />
-          </IconButton>
-        </Tooltip>
+        <Box
+          sx={{
+            position: "absolute",
+            top: 10,
+            right: 10,
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 1,
+          }}>
+          {canAutoCrop && (
+            <VideoGpxUploader
+              videoId={pair.id}
+              startTime={pair.startTime || null}
+              durationSec={pair.durationSec || null}
+              onStored={refresh}
+              overwrite
+              compact
+            />
+          )}
+          <Tooltip title="Download GPS track as GPX" placement="left">
+            <IconButton
+              variant="solid"
+              color="primary"
+              size="sm"
+              onClick={() => {
+                window.open(`/api/videos/${pair.id}/gps/gpx`, "_blank");
+              }}>
+              <DownloadIcon />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
+
+      {!!gps && (gps.front?.length || gps.rear?.length || 0) > 1 && (
+        <Box
+          sx={{
+            position: "absolute",
+            left: 10,
+            bottom: 28,
+            zIndex: 1000,
+            p: 1,
+            borderRadius: "sm",
+            bgcolor: "background.surface",
+            boxShadow: "sm",
+            pointerEvents: "none",
+          }}>
+          <Typography level="body-xs" sx={{ fontWeight: "lg", mb: 0.5 }}>
+            Speed (km/h)
+          </Typography>
+          <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+            {SPEED_COLOR_STOPS.map((stop) => (
+              <Box
+                key={stop.speedKph}
+                sx={{ display: "flex", alignItems: "center", gap: 0.4 }}>
+                <Box
+                  sx={{
+                    width: 14,
+                    height: 4,
+                    borderRadius: 2,
+                    bgcolor: stop.color,
+                  }}
+                />
+                <Typography level="body-xs">{stop.speedKph}</Typography>
+              </Box>
+            ))}
+          </Box>
+        </Box>
       )}
 
       <MapContainer

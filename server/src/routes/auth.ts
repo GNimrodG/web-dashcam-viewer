@@ -7,6 +7,7 @@ import {
 } from "../middleware/auth.js";
 import { logger } from "../logger.js";
 import { loadConfig } from "../config.js";
+import { sanitizeReturnPath } from "../utils/http.js";
 
 const router = express.Router();
 const config = loadConfig();
@@ -14,17 +15,17 @@ const config = loadConfig();
 // Get current user
 router.get("/me", (req, res) => {
   const user = getCurrentUser(req);
-  if (!user) {
-    return res.status(401).json({ error: "Not authenticated" });
-  }
-  res.json({ user });
+  res.json({ user, authEnabled: config.AUTH_ENABLED });
 });
 
 // Initiate login
 router.get("/login", async (req, res) => {
+  if (!config.AUTH_ENABLED) {
+    return res.status(404).json({ error: "Authentication is disabled" });
+  }
   try {
     // Store return URL with hash if provided
-    const returnUrl = req.query.returnUrl as string | undefined;
+    const returnUrl = sanitizeReturnPath(req.query.returnUrl);
     if (returnUrl) {
       req.session.returnUrl = returnUrl;
     }
@@ -52,7 +53,9 @@ router.get("/callback", async (req, res) => {
     delete req.session.returnUrl;
 
     // Redirect to frontend (with hash if provided)
-    const redirectUrl = returnUrl || config.FRONTEND_URL;
+    const redirectUrl = returnUrl
+      ? new URL(returnUrl, config.FRONTEND_URL).href
+      : config.FRONTEND_URL;
     res.redirect(redirectUrl);
   } catch (error) {
     logger.error({ error }, "OAuth callback failed");

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, text } from "express";
 import {
   getVideoPairs,
   getVideoPairById,
@@ -9,6 +9,7 @@ import {
   getGpsExtractionQueueStatus,
   updatePairLocation,
   getAllUniqueLocations,
+  registerStoredGpsForPair,
 } from "../services/indexer.js";
 import { createClip } from "../services/clipper.js";
 import { generateGPX } from "../services/gpx.js";
@@ -18,6 +19,13 @@ import { ffprobe } from "../services/ffprobe.js";
 import { loadConfig } from "../config.js";
 import path from "node:path";
 import fs from "node:fs";
+import { isSafeClipFilename } from "../utils/http.js";
+import {
+  buildStoredGpxDocument,
+  cropAbsoluteGpxPoints,
+  parseAbsoluteGpxPoints,
+} from "../utils/gpx.js";
+import { sampleGpsTrack } from "../utils/gps-map.js";
 
 const config = loadConfig();
 
@@ -87,6 +95,46 @@ router.get("/gps-queue-status", (_req, res) => {
   });
 });
 
+// Simplified GPS tracks for the all-recordings map. Extraction uses the same
+// bounded queue and persistent caches as the individual recording map.
+router.get("/gps-map", async (_req, res) => {
+  const pairs = getVideoPairs();
+  const candidates = pairs.filter(
+    (pair) =>
+      !(
+        (!pair.channels.front || pair.channels.front.noGps) &&
+        (!pair.channels.rear || pair.channels.rear.noGps)
+      ),
+  );
+
+  const tracks = await Promise.all(
+    candidates.map(async (pair) => {
+      try {
+        const gps = await getGpsTrackForPair(pair.id);
+        const points = gps.front?.length ? gps.front : gps.rear;
+        if (!points?.length) return null;
+        return {
+          id: pair.id,
+          startTime: pair.startTime,
+          durationSec: pair.durationSec,
+          startLocationName: pair.startLocationName,
+          endLocationName: pair.endLocationName,
+          points: sampleGpsTrack(points),
+        };
+      } catch (error) {
+        console.warn(`Failed to load GPS map track for ${pair.id}:`, error);
+        return null;
+      }
+    }),
+  );
+
+  res.json({
+    totalRecordings: pairs.length,
+    recordingsWithGps: tracks.filter(Boolean).length,
+    tracks: tracks.filter(Boolean),
+  });
+});
+
 // List all clips
 router.get("/clips", async (_req, res) => {
   const clipsDir = path.join(config.MEDIA_DIR, "clips");
@@ -127,14 +175,15 @@ router.get("/clips", async (_req, res) => {
           }
 
           // Generate thumbnail in background (don't wait for it)
-          let thumbnailUrl = `/api/videos/clips/${filename}/thumbnail`;
+          const encodedFilename = encodeURIComponent(filename);
+          let thumbnailUrl = `/api/videos/clips/${encodedFilename}/thumbnail`;
           ensureThumbnail(filePath, filename, clipsDir).catch((err) => {
             console.warn(`Thumbnail generation failed for ${filename}:`, err);
           });
 
           return {
             filename,
-            url: `/api/videos/clips/${filename}`,
+            url: `/api/videos/clips/${encodedFilename}`,
             thumbnailUrl,
             size: stats.size,
             duration,
@@ -163,6 +212,9 @@ router.get("/clips", async (_req, res) => {
 // Get thumbnail for a clip
 router.get("/clips/:filename/thumbnail", async (req, res) => {
   const filename = req.params.filename;
+  if (!isSafeClipFilename(filename)) {
+    return res.status(400).json({ error: "Invalid filename" });
+  }
   const clipsDir = path.join(config.MEDIA_DIR, "clips");
   const filePath = path.join(clipsDir, filename);
 
@@ -183,6 +235,9 @@ router.get("/clips/:filename/thumbnail", async (req, res) => {
 // Stream a generated clip (with range support)
 router.get("/clips/:filename", (req, res) => {
   const filename = req.params.filename;
+  if (!isSafeClipFilename(filename)) {
+    return res.status(400).json({ error: "Invalid filename" });
+  }
   const filePath = path.join(config.MEDIA_DIR, "clips", filename);
 
   if (!fs.existsSync(filePath)) {
@@ -198,16 +253,16 @@ router.patch("/clips/:filename", (req, res) => {
   const oldFilename = req.params.filename;
   const newFilename = getAny(req.body, "newFilename") as string | undefined;
 
+  if (!isSafeClipFilename(oldFilename)) {
+    return res.status(400).json({ error: "Invalid filename" });
+  }
+
   if (!newFilename || typeof newFilename !== "string") {
     return res.status(400).json({ error: "New filename is required" });
   }
 
   // Validate filename (must end with .mp4, no path traversal)
-  if (
-    !newFilename.endsWith(".mp4") ||
-    newFilename.includes("/") ||
-    newFilename.includes("\\")
-  ) {
+  if (!isSafeClipFilename(newFilename)) {
     return res.status(400).json({ error: "Invalid filename" });
   }
 
@@ -249,6 +304,9 @@ router.patch("/clips/:filename", (req, res) => {
 // Delete a clip
 router.delete("/clips/:filename", (req, res) => {
   const filename = req.params.filename;
+  if (!isSafeClipFilename(filename)) {
+    return res.status(400).json({ error: "Invalid filename" });
+  }
   const clipsDir = path.join(config.MEDIA_DIR, "clips");
   const filePath = path.join(clipsDir, filename);
 
@@ -285,11 +343,14 @@ router.get("/:id", (req, res) => {
 
 // Stream a specific channel
 router.get("/:id/source/:channel", (req, res) => {
-  const { id, channel } = req.params as { id: string; channel: Channel };
+  const { id, channel } = req.params;
+  if (channel !== "front" && channel !== "rear") {
+    return res.status(400).json({ error: "Invalid channel" });
+  }
   const pair = getVideoPairById(id);
   if (!pair) return res.status(404).json({ error: "Not found" });
 
-  const file = pair.channels[channel];
+  const file = pair.channels[channel as Channel];
   if (!file) return res.status(404).json({ error: "Channel not found" });
 
   // Delegate to stream helper for range support
@@ -354,6 +415,8 @@ router.post("/:id/gps/gpx", async (req, res) => {
     }
 
     const filePath = saveRecordedGpxTrack(config.MEDIA_DIR, pair.id, gpxXml);
+    registerStoredGpsForPair(pair.id);
+    await getGpsTrackForPair(pair.id);
     res.json({
       success: true,
       message: "GPX stored for recording",
@@ -363,6 +426,82 @@ router.post("/:id/gps/gpx", async (req, res) => {
     res.status(500).json({ error: e?.message || "Failed to store GPX" });
   }
 });
+
+router.post(
+  "/gps/gpx/bulk",
+  text({
+    type: ["application/gpx+xml", "application/xml", "text/xml"],
+    limit: "100mb",
+  }),
+  async (req, res) => {
+    try {
+      if (typeof req.body !== "string" || !req.body.trim()) {
+        return res.status(400).json({ error: "GPX XML is required" });
+      }
+
+      const points = parseAbsoluteGpxPoints(req.body);
+      const pairs = getVideoPairs();
+      const updatedIds: string[] = [];
+      const failures: Array<{ id: string; error: string }> = [];
+      let skipped = 0;
+
+      for (const pair of pairs) {
+        const startMs = pair.startTime ? Date.parse(pair.startTime) : Number.NaN;
+        const durationSec = pair.durationSec;
+        if (
+          !Number.isFinite(startMs) ||
+          !Number.isFinite(durationSec) ||
+          !durationSec ||
+          durationSec <= 0
+        ) {
+          skipped++;
+          continue;
+        }
+
+        const cropped = cropAbsoluteGpxPoints(
+          points,
+          startMs,
+          startMs + durationSec * 1000,
+        );
+        if (!cropped.length) {
+          skipped++;
+          continue;
+        }
+
+        try {
+          const output = buildStoredGpxDocument(
+            cropped,
+            `${pair.id} GPS`,
+            "Automatically cropped from bulk GPX upload",
+          );
+          saveRecordedGpxTrack(config.MEDIA_DIR, pair.id, output);
+          registerStoredGpsForPair(pair.id);
+          updatedIds.push(pair.id);
+        } catch (error: any) {
+          failures.push({
+            id: pair.id,
+            error: error?.message || "Failed to store GPX",
+          });
+        }
+      }
+
+      res.json({
+        success: failures.length === 0,
+        totalPoints: points.length,
+        totalRecordings: pairs.length,
+        updated: updatedIds.length,
+        skipped,
+        failed: failures.length,
+        updatedIds,
+        failures,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        error: error?.message || "Failed to process bulk GPX upload",
+      });
+    }
+  },
+);
 
 // Admin: trigger location backfill (limit query param; limit<=0 => full)
 router.post("/backfill/locations", async (req, res) => {
@@ -409,14 +548,23 @@ router.post("/:id/clip", async (req, res) => {
       audioVolume?: number;
     };
 
+    const validChannels = [
+      "front",
+      "rear",
+      "both-stacked",
+      "both-side-by-side",
+    ];
     if (
-      typeof startTime !== "number" ||
-      typeof endTime !== "number" ||
-      !channels
+      !Number.isFinite(startTime) ||
+      !Number.isFinite(endTime) ||
+      startTime < 0 ||
+      endTime <= startTime ||
+      endTime > (pair.durationSec || Number.POSITIVE_INFINITY) ||
+      !validChannels.includes(channels) ||
+      (audioVolume !== undefined &&
+        (!Number.isFinite(audioVolume) || audioVolume < 0 || audioVolume > 1))
     ) {
-      return res
-        .status(400)
-        .json({ error: "Missing or invalid startTime, endTime, or channels" });
+      return res.status(400).json({ error: "Invalid clip options" });
     }
 
     const frontPath = pair.channels.front?.path || null;

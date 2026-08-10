@@ -14,6 +14,7 @@ import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import RestoreIcon from "@mui/icons-material/Restore";
 import { useState, useEffect, type FunctionComponent } from "react";
 import { getUniqueLocations, updatePairLocation, type VideoPair } from "../api";
+import { formatPairTime } from "../utils/recording-time";
 
 interface SetLocationModalProps {
   open: boolean;
@@ -105,19 +106,6 @@ const SetLocationModal: FunctionComponent<SetLocationModalProps> = ({
     }
   };
 
-  const formatPairId = (id: string) => {
-    const [datePart, timePart] = id.split("_");
-    if (!datePart || !timePart || datePart.length !== 8 || timePart.length < 6)
-      return id;
-    const yyyy = datePart.slice(0, 4);
-    const mm = datePart.slice(4, 6);
-    const dd = datePart.slice(6, 8);
-    const hh = timePart.slice(0, 2);
-    const mi = timePart.slice(2, 4);
-    const ss = timePart.slice(4, 6);
-    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
-  };
-
   if (!pair) return null;
 
   return (
@@ -132,7 +120,7 @@ const SetLocationModal: FunctionComponent<SetLocationModalProps> = ({
           Set Location
         </Typography>
         <Typography level="body-sm" sx={{ mb: 3 }}>
-          {formatPairId(pair.id)}
+          {formatPairTime(pair)}
         </Typography>
 
         <Stack spacing={3}>

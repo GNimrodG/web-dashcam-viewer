@@ -138,6 +138,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 #### Core Settings
 
 - `MEDIA_DIR` - **Required.** Absolute path to dashcam video folder
+- `DASHCAM_TIME_ZONE` - IANA timezone used by timestamps in dashcam filenames (default: `Etc/GMT-2`, fixed UTC+2)
 - `PORT` - Server port (default: 3000)
 - `NODE_ENV` - Environment mode (`development` or `production`)
 - `SERVE_WEB` - Serve frontend build from server (default: `true`)
@@ -165,6 +166,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `GET /api/videos/:id/source/:channel` - Stream video (`front` or `rear`)
 - `GET /api/videos/:id/gps` - Get GPS track data
 - `GET /api/videos/:id/gps/gpx` - Download GPS track as GPX
+- `POST /api/videos/gps/gpx/bulk` - Apply one GPX file to every overlapping recording
 - `GET /api/videos/gps-queue-status` - Real-time GPS queue status (SSE)
 - `GET /api/videos/locations` - Get unique cities/countries for autocomplete
 - `GET /api/videos/clips` - List generated clips
@@ -187,6 +189,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 ### Share Links
 
 - `POST /api/shares` - Create share token for a clip
+- `POST /api/shares/clip` - Create a 1-365 day public share for a generated clip
 - `GET /api/shares/:tokenId` - Get share token details
 - `GET /api/shares/:tokenId/download` - Download shared clip
 - `GET /api/shares/video/:videoId` - List share tokens for video
@@ -364,6 +367,7 @@ services:
       - /path/to/cache:/cache
     environment:
       MEDIA_DIR: /media
+      DASHCAM_TIME_ZONE: Etc/GMT-2
       INDEX_CACHE_DIR: /cache
       AUTH_ENABLED: "true"
       AUTHENTIK_ISSUER: https://auth.example.com/application/o/dashcam/

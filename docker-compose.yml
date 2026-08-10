@@ -9,6 +9,7 @@ services:
       - "3000:3000"
     environment:
       - MEDIA_DIR=/media
+      - DASHCAM_TIME_ZONE=Etc/GMT-2
       # Authentication (Authentik OIDC)
       # - AUTH_ENABLED=false  # Set to true to enable authentication
       # - AUTHENTIK_ISSUER=https://your-authentik.domain/application/o/dashcam-viewer/

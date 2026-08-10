@@ -1,24 +1,28 @@
 import { useState, useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { CssVarsProvider } from "@mui/joy/styles";
 import CssBaseline from "@mui/joy/CssBaseline";
 import Box from "@mui/joy/Box";
 import CircularProgress from "@mui/joy/CircularProgress";
-import { getCurrentUser, loginUrl } from "./api";
+import { getAuthStatus, loginUrl } from "./api";
 import Layout from "./components/Layout";
 import MainPage from "./pages/MainPage";
 import SharePage from "./pages/SharePage";
 import ClipsPage from "./pages/ClipsPage";
+import RecordingsMapPage from "./pages/RecordingsMapPage";
 
 export default function App() {
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const isPublicShare = globalThis.location.pathname.startsWith("/share/");
 
   useEffect(() => {
-    getCurrentUser()
-      .then((user) => {
-        if (user) {
+    getAuthStatus()
+      .then(({ user, authEnabled }) => {
+        if (!authEnabled || user) {
           setIsAuthenticated(true);
+          setIsCheckingAuth(false);
+        } else if (isPublicShare) {
           setIsCheckingAuth(false);
         } else {
           // Not authenticated, redirect to login
@@ -26,10 +30,13 @@ export default function App() {
         }
       })
       .catch(() => {
-        // Auth check failed, redirect to login
-        globalThis.location.href = loginUrl();
+        if (isPublicShare) {
+          setIsCheckingAuth(false);
+        } else {
+          globalThis.location.href = loginUrl();
+        }
       });
-  }, []);
+  }, [isPublicShare]);
 
   if (isCheckingAuth) {
     return (
@@ -54,13 +61,15 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route element={<Layout />}>
+            <Route path="/" element={<MainPage />} />
             <Route
-              path="/"
-              element={
-                isAuthenticated ? <MainPage /> : <Navigate to="/share" />
-              }
+              path="/recordings-map"
+              element={isAuthenticated ? <RecordingsMapPage /> : null}
             />
-            <Route path="/clips" element={<ClipsPage />} />
+            <Route
+              path="/clips"
+              element={isAuthenticated ? <ClipsPage /> : null}
+            />
           </Route>
           <Route path="/share/:tokenId" element={<SharePage />} />
         </Routes>
