@@ -13,6 +13,14 @@ export interface ShareToken {
   createdBy: string | null;
 }
 
+export interface VideoPoi {
+  id: string;
+  videoId: string;
+  timeSec: number;
+  label: string;
+  createdAt: number;
+}
+
 let db: Database.Database;
 
 export function initDatabase(mediaDir: string) {
@@ -41,6 +49,21 @@ export function initDatabase(mediaDir: string) {
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_share_tokens_video_id
     ON share_tokens(video_id)
+  `);
+
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS video_pois (
+      id TEXT PRIMARY KEY,
+      video_id TEXT NOT NULL,
+      time_sec REAL NOT NULL,
+      label TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `);
+
+    db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_video_pois_video_time
+    ON video_pois(video_id, time_sec)
   `);
 
     // Clean up expired tokens on startup
@@ -130,6 +153,54 @@ export function getTokensForVideo(videoId: string): ShareToken[] {
   `);
 
   return stmt.all(videoId) as ShareToken[];
+}
+
+export function createVideoPoi(poi: VideoPoi): void {
+  db.prepare(
+    `INSERT INTO video_pois (id, video_id, time_sec, label, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(poi.id, poi.videoId, poi.timeSec, poi.label, poi.createdAt);
+}
+
+export function getVideoPois(videoId: string): VideoPoi[] {
+  return db
+    .prepare(
+      `SELECT
+         id,
+         video_id as videoId,
+         time_sec as timeSec,
+         label,
+         created_at as createdAt
+       FROM video_pois
+       WHERE video_id = ?
+       ORDER BY time_sec ASC, created_at ASC`,
+    )
+    .all(videoId) as VideoPoi[];
+}
+
+export function getVideoPoiCount(videoId: string): number {
+  const row = db
+    .prepare("SELECT COUNT(*) as count FROM video_pois WHERE video_id = ?")
+    .get(videoId) as { count: number };
+  return row.count;
+}
+
+export function getVideoPoiCounts(): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT video_id as videoId, COUNT(*) as count
+       FROM video_pois
+       GROUP BY video_id`,
+    )
+    .all() as Array<{ videoId: string; count: number }>;
+  return new Map(rows.map((row) => [row.videoId, row.count]));
+}
+
+export function deleteVideoPoi(videoId: string, poiId: string): boolean {
+  const result = db
+    .prepare("DELETE FROM video_pois WHERE id = ? AND video_id = ?")
+    .run(poiId, videoId);
+  return result.changes > 0;
 }
 
 export function closeDatabase(): void {

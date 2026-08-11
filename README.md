@@ -125,6 +125,12 @@ A full-featured web application for viewing and managing Viofo dashcam recording
      dashcam-viewer
    ```
 
+   Published images are also available from GitHub Container Registry:
+
+   ```sh
+   docker pull ghcr.io/gnimrodg/web-dashcam-viewer:latest
+   ```
+
 4. **Or run directly:**
    ```sh
    cd server

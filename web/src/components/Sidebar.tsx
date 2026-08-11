@@ -32,6 +32,7 @@ import WarningIcon from "@mui/icons-material/Warning";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import EmergencyRecordingIcon from "@mui/icons-material/EmergencyRecording";
+import LocationOnIcon from "@mui/icons-material/LocationOn";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import moment from "moment";
 import PairLocation from "./PairLocation";
@@ -65,6 +66,7 @@ import MapIcon from "@mui/icons-material/Map";
 import Modal from "@mui/joy/Modal";
 import ModalDialog from "@mui/joy/ModalDialog";
 import LinearProgress from "@mui/joy/LinearProgress";
+import Checkbox from "@mui/joy/Checkbox";
 import {
   formatPairTime,
   getPairDisplayDate,
@@ -91,6 +93,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
 }) => {
   const { pairs, loading, error, refresh, updatePair } = useVideoPairs();
   const [search, setSearch] = useState("");
+  const [importantOnly, setImportantOnly] = useState(false);
   const [isReindexing, setIsReindexing] = useState(false);
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [isBulkGpxUploading, setIsBulkGpxUploading] = useState(false);
@@ -110,7 +113,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
   const [selectedPairForLocation, setSelectedPairForLocation] =
     useState<VideoPair | null>(null);
   const navigate = useNavigate();
-  const selectedItemRef = useRef<HTMLDivElement | null>(null);
+  const selectedItemRef = useRef<HTMLLIElement | null>(null);
   const bulkGpxInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -151,6 +154,22 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
     globalThis.addEventListener("gps-data-updated", handleGpsUpdated);
     return () =>
       globalThis.removeEventListener("gps-data-updated", handleGpsUpdated);
+  }, [updatePair]);
+
+  useEffect(() => {
+    const handlePoisUpdated = async (event: Event) => {
+      const { videoId } = (event as CustomEvent<{ videoId: string }>).detail;
+      try {
+        const updatedPair = await fetchPair(videoId);
+        if (updatedPair) updatePair(updatedPair);
+      } catch (err) {
+        console.error("Failed to update recording POI indicator:", err);
+      }
+    };
+
+    globalThis.addEventListener("video-pois-updated", handlePoisUpdated);
+    return () =>
+      globalThis.removeEventListener("video-pois-updated", handlePoisUpdated);
   }, [updatePair]);
 
   const handleReindex = async () => {
@@ -251,10 +270,11 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
   const filteredPairs = useMemo(() => {
     const idSearch = search.trim().replaceAll(/\D/g, "").toLowerCase();
     const placeSearch = search.trim().toLowerCase();
+    const candidates = importantOnly ? pairs.filter(isImportant) : pairs;
 
-    if (!idSearch && !placeSearch) return pairs;
+    if (!idSearch && !placeSearch) return candidates;
 
-    return pairs.filter(
+    return candidates.filter(
       (p) =>
         (idSearch && p.id.toLowerCase().includes(idSearch)) ||
         (idSearch &&
@@ -263,7 +283,12 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
           p.startLocationName?.toLowerCase().includes(placeSearch)) ||
         (placeSearch && p.endLocationName?.toLowerCase().includes(placeSearch)),
     );
-  }, [pairs, search]);
+  }, [importantOnly, pairs, search]);
+
+  const importantPairCount = useMemo(
+    () => pairs.filter(isImportant).length,
+    [pairs],
+  );
 
   // Group filtered pairs by Year -> Month -> Day
   const grouped = useMemo(() => {
@@ -616,6 +641,20 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
         }}
       />
 
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <Checkbox
+          size="sm"
+          checked={importantOnly}
+          disabled={importantPairCount === 0}
+          onChange={(event) => setImportantOnly(event.target.checked)}
+          label="Important recordings only"
+          sx={{ flex: 1 }}
+        />
+        <Chip size="sm" color="danger" variant="soft">
+          {importantPairCount}
+        </Chip>
+      </Box>
+
       {/* Year / Month Bookmarks */}
       {sortedYears.length > 0 && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -759,6 +798,20 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
               </ListItemButton>
             </ListItem>
           )}
+
+          {!loading &&
+            !error &&
+            pairs.length > 0 &&
+            filteredPairs.length === 0 && (
+              <ListItem>
+                <ListItemButton disabled>
+                  <ListItemDecorator>
+                    <WarningIcon color="warning" />
+                  </ListItemDecorator>
+                  <ListItemContent>No matching recordings</ListItemContent>
+                </ListItemButton>
+              </ListItem>
+            )}
 
           {/* Video list */}
           {!loading &&
@@ -906,6 +959,22 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                           <Typography level="title-sm">
                                             {formatPairTime(p)}
                                           </Typography>
+                                          {!!p.poiCount && (
+                                            <Chip
+                                              size="sm"
+                                              color="warning"
+                                              variant="soft"
+                                              startDecorator={
+                                                <LocationOnIcon
+                                                  sx={{ fontSize: "0.9rem" }}
+                                                />
+                                              }
+                                              aria-label={`${p.poiCount} point${p.poiCount === 1 ? "" : "s"} of interest`}
+                                              title={`${p.poiCount} point${p.poiCount === 1 ? "" : "s"} of interest`}
+                                              sx={{ minHeight: 20 }}>
+                                              {p.poiCount}
+                                            </Chip>
+                                          )}
                                           {(!p.channels.front ||
                                             p.channels.front?.noGps) &&
                                             (!p.channels.rear ||

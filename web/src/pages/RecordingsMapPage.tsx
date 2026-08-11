@@ -21,7 +21,10 @@ import {
   type GpsMapTrack,
   type VideoPair,
 } from "../api";
-import { buildGpsOverlapLocations } from "../utils/gps-overlap";
+import {
+  buildGpsOverlapLocations,
+  spaceGpsOverlapLocations,
+} from "../utils/gps-overlap";
 import { formatPairTime } from "../utils/recording-time";
 
 interface OutletContext {
@@ -62,6 +65,7 @@ export default function RecordingsMapPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showOverlaps, setShowOverlaps] = useState(true);
+  const [overlapZoom, setOverlapZoom] = useState(8);
   const [selectedOverlapIds, setSelectedOverlapIds] = useState<string[]>([]);
 
   useEffect(() => {
@@ -104,6 +108,17 @@ export default function RecordingsMapPage() {
 
   useEffect(() => {
     const map = mapRef.current;
+    if (!map) return;
+    const updateZoom = () => setOverlapZoom(map.getZoom());
+    updateZoom();
+    map.on("zoomend", updateZoom);
+    return () => {
+      map.off("zoomend", updateZoom);
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
     if (!map || !catalog) return;
     const layers = L.featureGroup().addTo(map);
     const renderer = L.canvas({ padding: 0.5 });
@@ -139,9 +154,15 @@ export default function RecordingsMapPage() {
     const map = mapRef.current;
     if (!map || !showOverlaps) return;
     const layers = L.featureGroup().addTo(map);
-    const renderer = L.canvas({ padding: 0.5 });
+    const renderer = L.svg({ padding: 0.5 });
+    const minimumSpacing = Math.min(90, 42 + Math.max(0, 13 - overlapZoom) * 6);
+    const spacedLocations = spaceGpsOverlapLocations(
+      overlapLocations,
+      (lat, lon) => map.project([lat, lon], overlapZoom),
+      minimumSpacing,
+    );
 
-    for (const overlap of overlapLocations) {
+    for (const overlap of spacedLocations) {
       const count = overlap.recordingIds.length;
       const color = overlapColor(count);
       L.circleMarker([overlap.lat, overlap.lon], {
@@ -161,7 +182,7 @@ export default function RecordingsMapPage() {
       map.removeLayer(layers);
       renderer.remove();
     };
-  }, [overlapLocations, showOverlaps]);
+  }, [overlapLocations, overlapZoom, showOverlaps]);
 
   return (
     <Box
@@ -238,12 +259,18 @@ export default function RecordingsMapPage() {
             justifyContent: "center",
             flexDirection: "column",
             gap: 1.5,
-            bgcolor: "rgba(var(--joy-palette-background-surfaceChannel) / 0.82)",
+            width: "fit-content",
+            height: "fit-content",
+            m: "auto",
+            p: 3,
+            borderRadius: "md",
+            boxShadow: "lg",
           }}>
           <CircularProgress size="lg" />
           <Typography>Loading GPS tracks…</Typography>
           <Typography level="body-xs">
-            The first load may extract GPS from recordings that were not opened yet.
+            The first load may extract GPS from recordings that were not opened
+            yet.
           </Typography>
         </Sheet>
       )}

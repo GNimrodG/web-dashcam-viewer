@@ -5,7 +5,15 @@ import {
   canonicalMediaPath,
   compareMediaPathPriority,
   isRoMediaPath,
+  isSupportedVideoFile,
 } from "./media-path.js";
+
+test("only supported video extensions can enter the recording index", () => {
+  assert.equal(isSupportedVideoFile("20260326_160911_F.MP4"), true);
+  assert.equal(isSupportedVideoFile("20260326_160911_R.mov"), true);
+  assert.equal(isSupportedVideoFile("20260326_160911.gpx"), false);
+  assert.equal(isSupportedVideoFile("video.mp4.gpscache.json"), false);
+});
 
 test(
   "canonical paths ignore slash style on Windows",

@@ -1,7 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import type { VideoPair } from "../api";
+import type { VideoPair, VideoPoi } from "../api";
 import { MapContainer, TileLayer } from "react-leaflet";
 import { useGpsData } from "../hooks/useGpsData";
 import LinearProgress from "@mui/joy/LinearProgress";
@@ -14,19 +14,23 @@ import Tooltip from "@mui/joy/Tooltip";
 import VideoGpxUploader from "./VideoGpxUploader";
 import {
   buildSpeedSegments,
+  calculateSpeedAtTime,
   SPEED_COLOR_STOPS,
   speedColor,
 } from "../utils/speed";
+import { interpolateGpsPosition } from "../utils/gps-interpolation";
 
 type Props = {
   pair: VideoPair | null;
   currentTimeSec?: number;
   onSeek?: (timeSec: number) => void;
+  pois?: readonly VideoPoi[];
 };
 export default function MapView({
   pair,
   currentTimeSec,
   onSeek,
+  pois = [],
 }: Readonly<Props>) {
   const canAutoCrop =
     !!pair?.startTime && Number.isFinite(pair?.durationSec ?? Number.NaN);
@@ -35,6 +39,7 @@ export default function MapView({
   const linePointsRef = useRef<
     Array<{ tsSec: number; lat: number; lon: number }>
   >([]);
+  const [currentSpeedKph, setCurrentSpeedKph] = useState<number | null>(null);
   const { gps, loading, error, refresh } = useGpsData(pair?.id || null);
 
   useEffect(() => {
@@ -68,7 +73,7 @@ export default function MapView({
           .bindTooltip(
             `${segment.speedKph.toFixed(0)} km/h${onSeek ? " · Click to seek" : ""}`,
             {
-            sticky: true,
+              sticky: true,
             },
           )
           .addTo(routeLayer);
@@ -104,10 +109,9 @@ export default function MapView({
             );
           });
           const pathElement = segmentLayer.getElement();
-          if (pathElement) {
+          if (pathElement instanceof SVGElement) {
             const midpointTime =
-              segment.from.tsSec +
-              (segment.to.tsSec - segment.from.tsSec) / 2;
+              segment.from.tsSec + (segment.to.tsSec - segment.from.tsSec) / 2;
             pathElement.style.cursor = "pointer";
             pathElement.setAttribute("role", "button");
             pathElement.setAttribute("tabindex", "0");
@@ -116,10 +120,8 @@ export default function MapView({
               `Seek video to ${midpointTime.toFixed(1)} seconds`,
             );
             pathElement.addEventListener("keydown", (keyboardEvent) => {
-              if (
-                keyboardEvent.key === "Enter" ||
-                keyboardEvent.key === " "
-              ) {
+              const key = keyboardEvent.key;
+              if (key === "Enter" || key === " ") {
                 keyboardEvent.preventDefault();
                 onSeek(midpointTime);
               }
@@ -156,7 +158,62 @@ export default function MapView({
     };
   }, [gps, pair, loading, error, onSeek]);
 
-  // Update moving marker when time changes
+  useEffect(() => {
+    const map = mapRef.current;
+    const points = linePointsRef.current;
+    if (!map || loading || points.length === 0 || pois.length === 0) return;
+
+    const poiLayer = L.featureGroup().addTo(map);
+    const firstTime = points[0].tsSec;
+    const lastTime = points.at(-1)!.tsSec;
+    for (const poi of pois) {
+      if (poi.timeSec < firstTime || poi.timeSec > lastTime) continue;
+      const position = interpolateGpsPosition(points, poi.timeSec);
+      if (!position) continue;
+
+      const marker = L.circleMarker([position.lat, position.lon], {
+        radius: 8,
+        color: "#7c2d12",
+        weight: 2,
+        fillColor: "#f97316",
+        fillOpacity: 1,
+        interactive: !!onSeek,
+        bubblingMouseEvents: false,
+      });
+      const tooltipContent = document.createElement("span");
+      tooltipContent.textContent = `${poi.label} · ${formatMapTime(poi.timeSec)}`;
+      marker
+        .bindTooltip(tooltipContent, {
+          direction: "top",
+        })
+        .addTo(poiLayer);
+      if (onSeek) {
+        marker.on("click", () => onSeek(poi.timeSec));
+        const markerElement = marker.getElement();
+        if (markerElement instanceof SVGElement) {
+          markerElement.style.cursor = "pointer";
+          markerElement.setAttribute("role", "button");
+          markerElement.setAttribute("tabindex", "0");
+          markerElement.setAttribute(
+            "aria-label",
+            `Seek to ${poi.label} at ${formatMapTime(poi.timeSec)}`,
+          );
+          markerElement.addEventListener("keydown", (event) => {
+            const key = event.key;
+            if (key === "Enter" || key === " ") {
+              event.preventDefault();
+              onSeek(poi.timeSec);
+            }
+          });
+        }
+      }
+    }
+
+    return () => {
+      map.removeLayer(poiLayer);
+    };
+  }, [gps, loading, onSeek, pois]);
+
   useEffect(() => {
     if (
       !mapRef.current ||
@@ -164,33 +221,21 @@ export default function MapView({
       !linePointsRef.current?.length ||
       loading ||
       currentTimeSec == null
-    )
+    ) {
+      setCurrentSpeedKph(null);
       return;
+    }
 
     const pts = linePointsRef.current;
+    setCurrentSpeedKph(calculateSpeedAtTime(pts, currentTimeSec));
+    const point = interpolateGpsPosition(pts, currentTimeSec);
+    if (!point) return;
 
-    // Find the closest GPS point to the current time (within 1 second tolerance)
-    let closestIdx = -1;
-    let minDiff = Number.POSITIVE_INFINITY;
-
-    for (let i = 0; i < pts.length; i++) {
-      const diff = Math.abs(pts[i].tsSec - currentTimeSec);
-      if (diff < minDiff) {
-        minDiff = diff;
-        closestIdx = i;
-      }
-    }
-
-    // Only update if we found a point within 1 second
-    if (closestIdx === -1 || minDiff > 1) return;
-
-    const point = pts[closestIdx];
-    const layer = markerRef.current as any;
-    if (layer.setLatLng) {
-      layer.setLatLng([point.lat, point.lon]);
-      mapRef.current?.panTo([point.lat, point.lon], { animate: true });
-    }
-  }, [currentTimeSec]);
+    const position = L.latLng(point.lat, point.lon);
+    const layer = markerRef.current as L.CircleMarker | L.Marker;
+    layer.setLatLng(position);
+    mapRef.current.panTo(position, { animate: false });
+  }, [currentTimeSec, gps, loading]);
 
   return (
     <Box sx={{ position: "relative", width: "100%", height: "100%" }}>
@@ -222,7 +267,7 @@ export default function MapView({
               boxShadow: "lg",
             }}>
             <CircularProgress size="lg" />
-            <Typography level="body-md">Extracting GPS data...</Typography>
+            <Typography level="body-md">Loading GPS data...</Typography>
           </Box>
         </>
       )}
@@ -309,6 +354,31 @@ export default function MapView({
         </Box>
       )}
 
+      {currentSpeedKph !== null && (
+        <Box
+          aria-label={`Current speed ${Math.round(currentSpeedKph)} kilometers per hour`}
+          sx={{
+            position: "absolute",
+            top: 10,
+            left: 55,
+            zIndex: 1000,
+            minWidth: 88,
+            px: 1.25,
+            py: 0.75,
+            borderRadius: "md",
+            border: `3px solid ${speedColor(currentSpeedKph)}`,
+            bgcolor: "background.surface",
+            boxShadow: "md",
+            textAlign: "center",
+            pointerEvents: "none",
+          }}>
+          <Typography level="h2" sx={{ lineHeight: 1 }}>
+            {Math.round(currentSpeedKph)}
+          </Typography>
+          <Typography level="body-xs">km/h</Typography>
+        </Box>
+      )}
+
       {!!gps && (gps.front?.length || gps.rear?.length || 0) > 1 && (
         <Box
           sx={{
@@ -359,4 +429,14 @@ export default function MapView({
       </MapContainer>
     </Box>
   );
+}
+
+function formatMapTime(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const remainingSeconds = Math.floor(seconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${minutes}:${remainingSeconds}`;
 }

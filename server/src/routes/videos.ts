@@ -25,7 +25,18 @@ import {
   cropAbsoluteGpxPoints,
   parseAbsoluteGpxPoints,
 } from "../utils/gpx.js";
-import { sampleGpsTrack } from "../utils/gps-map.js";
+import {
+  getGpsMapCatalog,
+  invalidateGpsMapCatalog,
+} from "../services/gps-map.js";
+import {
+  createVideoPoi,
+  deleteVideoPoi,
+  getVideoPoiCount,
+  getVideoPoiCounts,
+  getVideoPois,
+} from "../db/database.js";
+import { randomUUID } from "node:crypto";
 
 const config = loadConfig();
 
@@ -40,7 +51,13 @@ const router = Router();
 // List pairs
 router.get("/", (_req, res) => {
   const pairs = getVideoPairs();
-  res.json(pairs);
+  const poiCounts = getVideoPoiCounts();
+  res.json(
+    pairs.map((pair) => ({
+      ...pair,
+      poiCount: poiCounts.get(pair.id) ?? 0,
+    })),
+  );
 });
 
 // Get unique locations for autocomplete
@@ -66,7 +83,11 @@ router.patch("/:id/location", (req, res) => {
   }
 
   const updatedPair = getVideoPairById(id);
-  res.json(updatedPair);
+  res.json(
+    updatedPair
+      ? { ...updatedPair, poiCount: getVideoPoiCount(updatedPair.id) }
+      : updatedPair,
+  );
 });
 
 // Get GPS extraction queue status (Server-Sent Events)
@@ -98,41 +119,60 @@ router.get("/gps-queue-status", (_req, res) => {
 // Simplified GPS tracks for the all-recordings map. Extraction uses the same
 // bounded queue and persistent caches as the individual recording map.
 router.get("/gps-map", async (_req, res) => {
-  const pairs = getVideoPairs();
-  const candidates = pairs.filter(
-    (pair) =>
-      !(
-        (!pair.channels.front || pair.channels.front.noGps) &&
-        (!pair.channels.rear || pair.channels.rear.noGps)
-      ),
-  );
+  try {
+    res.json(await getGpsMapCatalog(config.MEDIA_DIR));
+  } catch (error: any) {
+    res.status(500).json({
+      error: error?.message || "Failed to build GPS map catalog",
+    });
+  }
+});
 
-  const tracks = await Promise.all(
-    candidates.map(async (pair) => {
-      try {
-        const gps = await getGpsTrackForPair(pair.id);
-        const points = gps.front?.length ? gps.front : gps.rear;
-        if (!points?.length) return null;
-        return {
-          id: pair.id,
-          startTime: pair.startTime,
-          durationSec: pair.durationSec,
-          startLocationName: pair.startLocationName,
-          endLocationName: pair.endLocationName,
-          points: sampleGpsTrack(points),
-        };
-      } catch (error) {
-        console.warn(`Failed to load GPS map track for ${pair.id}:`, error);
-        return null;
-      }
-    }),
-  );
+router.get("/:id/pois", (req, res) => {
+  const pair = getVideoPairById(req.params.id);
+  if (!pair) return res.status(404).json({ error: "Video pair not found" });
+  res.json(getVideoPois(pair.id));
+});
 
-  res.json({
-    totalRecordings: pairs.length,
-    recordingsWithGps: tracks.filter(Boolean).length,
-    tracks: tracks.filter(Boolean),
-  });
+router.post("/:id/pois", (req, res) => {
+  const pair = getVideoPairById(req.params.id);
+  if (!pair) return res.status(404).json({ error: "Video pair not found" });
+
+  const timeSec = getAny(req.body, "timeSec");
+  const requestedLabel = getAny(req.body, "label");
+  if (typeof timeSec !== "number" || !Number.isFinite(timeSec) || timeSec < 0) {
+    return res.status(400).json({ error: "A valid POI time is required" });
+  }
+  if (pair.durationSec !== undefined && timeSec > pair.durationSec) {
+    return res.status(400).json({ error: "POI time exceeds video duration" });
+  }
+  if (typeof requestedLabel !== "string" || !requestedLabel.trim()) {
+    return res.status(400).json({ error: "A POI label is required" });
+  }
+
+  const label = requestedLabel.trim();
+  if (label.length > 120) {
+    return res.status(400).json({ error: "POI label is too long" });
+  }
+
+  const poi = {
+    id: randomUUID(),
+    videoId: pair.id,
+    timeSec,
+    label,
+    createdAt: Date.now(),
+  };
+  createVideoPoi(poi);
+  res.status(201).json(poi);
+});
+
+router.delete("/:id/pois/:poiId", (req, res) => {
+  const pair = getVideoPairById(req.params.id);
+  if (!pair) return res.status(404).json({ error: "Video pair not found" });
+  if (!deleteVideoPoi(pair.id, req.params.poiId)) {
+    return res.status(404).json({ error: "POI not found" });
+  }
+  res.status(204).end();
 });
 
 // List all clips
@@ -338,7 +378,7 @@ router.delete("/clips/:filename", (req, res) => {
 router.get("/:id", (req, res) => {
   const pair = getVideoPairById(req.params.id);
   if (!pair) return res.status(404).json({ error: "Not found" });
-  res.json(pair);
+  res.json({ ...pair, poiCount: getVideoPoiCount(pair.id) });
 });
 
 // Stream a specific channel
@@ -416,6 +456,7 @@ router.post("/:id/gps/gpx", async (req, res) => {
 
     const filePath = saveRecordedGpxTrack(config.MEDIA_DIR, pair.id, gpxXml);
     registerStoredGpsForPair(pair.id);
+    await invalidateGpsMapCatalog(config.MEDIA_DIR);
     await getGpsTrackForPair(pair.id);
     res.json({
       success: true,
@@ -446,7 +487,9 @@ router.post(
       let skipped = 0;
 
       for (const pair of pairs) {
-        const startMs = pair.startTime ? Date.parse(pair.startTime) : Number.NaN;
+        const startMs = pair.startTime
+          ? Date.parse(pair.startTime)
+          : Number.NaN;
         const durationSec = pair.durationSec;
         if (
           !Number.isFinite(startMs) ||
@@ -483,6 +526,10 @@ router.post(
             error: error?.message || "Failed to store GPX",
           });
         }
+      }
+
+      if (updatedIds.length) {
+        await invalidateGpsMapCatalog(config.MEDIA_DIR);
       }
 
       res.json({

@@ -59,6 +59,7 @@ export interface VideoPair {
   endCountry?: string;
   endState?: string;
   endCity?: string;
+  poiCount?: number;
 }
 
 export interface GPSPoint {
@@ -72,6 +73,14 @@ export interface GPSPoint {
 export interface GPSData {
   front?: GPSPoint[];
   rear?: GPSPoint[];
+}
+
+export interface VideoPoi {
+  id: string;
+  videoId: string;
+  timeSec: number;
+  label: string;
+  createdAt: number;
 }
 
 export interface GpsMapTrack {
@@ -144,6 +153,30 @@ export async function fetchGpsMap(
 export async function fetchPair(id: string): Promise<VideoPair | null> {
   const { data } = await api.get(`/videos/${id}`);
   return data;
+}
+
+export async function fetchVideoPois(
+  id: string,
+  signal?: AbortSignal,
+): Promise<VideoPoi[]> {
+  const { data } = await api.get<VideoPoi[]>(`/videos/${id}/pois`, { signal });
+  return data;
+}
+
+export async function createVideoPoi(
+  id: string,
+  timeSec: number,
+  label: string,
+): Promise<VideoPoi> {
+  const { data } = await api.post<VideoPoi>(`/videos/${id}/pois`, {
+    timeSec,
+    label,
+  });
+  return data;
+}
+
+export async function deleteVideoPoi(id: string, poiId: string): Promise<void> {
+  await api.delete(`/videos/${id}/pois/${poiId}`);
 }
 
 export async function fetchGps(

@@ -30,6 +30,7 @@ export interface VideoPair {
   endCountry?: string;
   endState?: string;
   endCity?: string;
+  poiCount?: number;
 }
 
 export interface GpsPoint {

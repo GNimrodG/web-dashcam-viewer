@@ -1,6 +1,30 @@
-import type { GpsPoint } from "../types.js";
+import { createHash } from "node:crypto";
+import type { GpsPoint, VideoPair } from "../types.js";
 
 export type GpsMapPoint = Pick<GpsPoint, "tsSec" | "lat" | "lon">;
+
+export function buildGpsMapSignature(pairs: readonly VideoPair[]): string {
+  const sources = pairs.map((pair) => ({
+    id: pair.id,
+    startTime: pair.startTime,
+    durationSec: pair.durationSec,
+    startLocationName: pair.startLocationName,
+    endLocationName: pair.endLocationName,
+    channels: Object.entries(pair.channels)
+      .filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] =>
+        Boolean(entry[1]),
+      )
+      .map(([channel, file]) => ({
+        channel,
+        path: file.path,
+        size: file.size,
+        mtimeMs: file.mtimeMs,
+        noGps: file.noGps,
+      }))
+      .sort((a, b) => a.channel.localeCompare(b.channel)),
+  }));
+  return createHash("sha256").update(JSON.stringify(sources)).digest("hex");
+}
 
 /**
  * Keep map payloads bounded while retaining both endpoints and the shape of a

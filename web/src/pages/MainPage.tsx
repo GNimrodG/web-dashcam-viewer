@@ -4,6 +4,7 @@ import MapView from "../components/MapView";
 import { Player } from "../components/Player";
 import Box from "@mui/joy/Box";
 import { VideoPair } from "../api";
+import { useVideoPois } from "../hooks/useVideoPois";
 
 interface OutletContext {
   activePair: VideoPair | null;
@@ -17,6 +18,12 @@ export default function MainPage() {
     timeSec: number;
     requestId: number;
   }>();
+  const {
+    pois,
+    loading: poisLoading,
+    addPoi,
+    removePoi,
+  } = useVideoPois(activePair?.id || null);
 
   useEffect(() => {
     setCurrentTimeSec(0);
@@ -51,11 +58,16 @@ export default function MainPage() {
         pair={activePair}
         onTimeUpdate={setCurrentTimeSec}
         seekRequest={seekRequest}
+        pois={pois}
+        poisLoading={poisLoading}
+        onCreatePoi={addPoi}
+        onDeletePoi={removePoi}
       />
       <MapView
         pair={activePair}
         currentTimeSec={currentTimeSec}
         onSeek={handleMapSeek}
+        pois={pois}
       />
     </Box>
   );

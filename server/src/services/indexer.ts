@@ -17,6 +17,7 @@ import {
   canonicalMediaPath,
   compareMediaPathPriority,
   isRoMediaPath,
+  isSupportedVideoFile,
 } from "../utils/media-path.js";
 
 const INDEX: Map<string, VideoPair> = new Map();
@@ -169,6 +170,10 @@ export async function buildIndex(mediaDir: string) {
       ) as (keyof typeof pair.channels)[]) {
         const vf = pair.channels[chName];
         if (!vf) continue;
+        if (!isSupportedVideoFile(vf.path)) {
+          delete pair.channels[chName];
+          continue;
+        }
         try {
           const st = await fs.stat(vf.path);
           vf.createdAt =
@@ -303,6 +308,7 @@ export function watchMediaFolder(mediaDir: string) {
     ignored: [
       /((^|[/\\])\..)|(\.gpscache\.json$)/, // Hidden files and GPS cache files
       /[/\\]clips[/\\]/, // Exclude clips directory
+      /\.gpx$/i, // Exclude GPX files
     ],
     // Network share optimizations
     usePolling, // Use polling instead of native events for network shares
@@ -339,6 +345,8 @@ export function watchMediaFolder(mediaDir: string) {
 }
 
 async function upsertFile(filePath: string) {
+  if (!isSupportedVideoFile(filePath)) return;
+
   try {
     const st = await fs.stat(filePath);
     const parsed = parseFilenameForPairing(filePath);
@@ -528,7 +536,9 @@ async function safeProbe(filePath: string): Promise<FFProbeResult | null> {
 }
 
 export function getVideoPairs(): VideoPair[] {
-  return Array.from(INDEX.values()).sort((a, b) => (a.id < b.id ? -1 : 1));
+  return Array.from(INDEX.values())
+    .filter((pair) => pair.channels.front || pair.channels.rear)
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
 }
 
 export function getVideoPairById(id: string): VideoPair | undefined {
@@ -574,6 +584,7 @@ const GPS_CONCURRENT_LIMIT = Number(process.env.GPS_CONCURRENT_LIMIT) || 5;
 let currentGpsExtractions = 0;
 const gpsExtractionQueue: Array<{
   id: string;
+  updateLocations: boolean;
   resolve: (value: { front?: GpsPoint[]; rear?: GpsPoint[] }) => void;
   reject: (reason?: any) => void;
   queuedAt: number;
@@ -644,12 +655,13 @@ function processNextInQueue() {
   );
 
   // Start the extraction immediately
-  const promise = startGpsExtraction(next.id);
+  const promise = startGpsExtraction(next.id, next.updateLocations);
   promise.then(next.resolve).catch(next.reject);
 }
 
 function startGpsExtraction(
   id: string,
+  updateLocations: boolean,
 ): Promise<{ front?: GpsPoint[]; rear?: GpsPoint[] }> {
   currentGpsExtractions++;
   processingGpsExtractions.add(id);
@@ -681,10 +693,12 @@ function startGpsExtraction(
           result.rear = recorded;
           pair.channels.rear.noGps = false;
         }
-        try {
-          await updatePairLocationsFromGps(pair, result);
-        } catch (e) {
-          logger.warn(e, "Failed reverse geocoding for pair " + id);
+        if (updateLocations) {
+          try {
+            await updatePairLocationsFromGps(pair, result);
+          } catch (e) {
+            logger.warn(e, "Failed reverse geocoding for pair " + id);
+          }
         }
         await saveCache();
         return result;
@@ -723,10 +737,12 @@ function startGpsExtraction(
       scheduleSave();
 
       // Derive start/end geocoded names (only once if not already set)
-      try {
-        await updatePairLocationsFromGps(pair, result);
-      } catch (e) {
-        logger.warn(e, "Failed reverse geocoding for pair " + id);
+      if (updateLocations) {
+        try {
+          await updatePairLocationsFromGps(pair, result);
+        } catch (e) {
+          logger.warn(e, "Failed reverse geocoding for pair " + id);
+        }
       }
       await saveCache();
       return result;
@@ -749,7 +765,9 @@ function startGpsExtraction(
 
 export function getGpsTrackForPair(
   id: string,
+  options: { updateLocations?: boolean } = {},
 ): Promise<{ front?: GpsPoint[]; rear?: GpsPoint[] }> {
+  const updateLocations = options.updateLocations !== false;
   if (gpsTrackPromises.has(id)) {
     logger.info("Reusing ongoing GPS extraction for pair: " + id);
     return gpsTrackPromises.get(id)!;
@@ -776,13 +794,19 @@ export function getGpsTrackForPair(
       front?: GpsPoint[];
       rear?: GpsPoint[];
     }>((resolve, reject) => {
-      gpsExtractionQueue.push({ id, resolve, reject, queuedAt: Date.now() });
+      gpsExtractionQueue.push({
+        id,
+        updateLocations,
+        resolve,
+        reject,
+        queuedAt: Date.now(),
+      });
     });
     gpsTrackPromises.set(id, queuedPromise);
     return queuedPromise;
   }
 
-  return startGpsExtraction(id);
+  return startGpsExtraction(id, updateLocations);
 }
 
 // Backfill geocoded names for any pairs that have GPS data extracted already.

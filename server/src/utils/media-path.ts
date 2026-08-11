@@ -1,5 +1,11 @@
 import path from "node:path";
 
+const SUPPORTED_VIDEO_EXTENSIONS = new Set([".mp4", ".mov"]);
+
+export function isSupportedVideoFile(filePath: string): boolean {
+  return SUPPORTED_VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
 export function canonicalMediaPath(filePath: string): string {
   const normalized = path.normalize(path.resolve(filePath));
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;

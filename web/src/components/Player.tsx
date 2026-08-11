@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useMemo } from "react";
-import { VideoPair, videoSourceUrl, createClip } from "../api";
+import { VideoPair, videoSourceUrl, createClip, type VideoPoi } from "../api";
 import Box from "@mui/joy/Box";
 import Stack from "@mui/joy/Stack";
 import Typography from "@mui/joy/Typography";
@@ -35,11 +35,25 @@ import RadioGroup from "@mui/joy/RadioGroup";
 import type { Mark } from "@mui/base/useSlider";
 import { useHotkeys } from "@mantine/hooks";
 import { formatPairTime } from "../utils/recording-time";
+import AddLocationAltIcon from "@mui/icons-material/AddLocationAlt";
+import LocationOnIcon from "@mui/icons-material/LocationOn";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import Input from "@mui/joy/Input";
+import {
+  clampPlaybackTime,
+  FRAME_STEP_SECONDS,
+  getRelativeSeekTarget,
+  KEYBOARD_SEEK_SECONDS,
+} from "../utils/playback-seek";
 
 interface PlayerProps {
   pair: VideoPair | null;
   onTimeUpdate?: (t: number) => void;
   seekRequest?: { timeSec: number; requestId: number };
+  pois?: readonly VideoPoi[];
+  poisLoading?: boolean;
+  onCreatePoi?: (timeSec: number, label: string) => Promise<VideoPoi>;
+  onDeletePoi?: (poiId: string) => Promise<void>;
 }
 
 function formatTime(seconds: number) {
@@ -89,6 +103,10 @@ export function Player({
   pair,
   onTimeUpdate,
   seekRequest,
+  pois = [],
+  poisLoading = false,
+  onCreatePoi,
+  onDeletePoi,
 }: Readonly<PlayerProps>) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -111,6 +129,11 @@ export function Player({
   >("front");
   const [clipAudioVolume, setClipAudioVolume] = useState(1); // 0-1 (0=mute, 1=original)
   const [isCreatingClip, setIsCreatingClip] = useState(false);
+  const [showPoiDialog, setShowPoiDialog] = useState(false);
+  const [poiTimeSec, setPoiTimeSec] = useState(0);
+  const [poiLabel, setPoiLabel] = useState("");
+  const [poiSaving, setPoiSaving] = useState(false);
+  const [poiError, setPoiError] = useState<string | null>(null);
   const startPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const endPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -401,6 +424,7 @@ export function Player({
     }
 
     setIsPlaying(false);
+    setShowPoiDialog(false);
   }, [pair?.id]);
 
   useEffect(() => {
@@ -448,7 +472,67 @@ export function Player({
     setIsPlaying(false);
   };
 
-  useHotkeys([["space", () => (isPlaying ? onPauseBoth() : onPlayBoth())]]);
+  const seekTo = (timeSec: number) => {
+    const video = frontRef.current || rearRef.current;
+    const durationSec = pair?.durationSec ?? video?.duration;
+    const target = clampPlaybackTime(timeSec, durationSec);
+    if (frontRef.current) frontRef.current.currentTime = target;
+    if (rearRef.current) rearRef.current.currentTime = target;
+    onTimeUpdate?.(target);
+  };
+
+  const seekRelative = (offsetSec: number) => {
+    const video = frontRef.current || rearRef.current;
+    if (!video) return;
+    const durationSec = pair?.durationSec ?? video.duration;
+    seekTo(getRelativeSeekTarget(video.currentTime, offsetSec, durationSec));
+  };
+
+  const handleOpenPoiDialog = () => {
+    const currentTime =
+      frontRef.current?.currentTime ?? rearRef.current?.currentTime ?? 0;
+    setPoiTimeSec(currentTime);
+    setPoiLabel("");
+    setPoiError(null);
+    setShowPoiDialog(true);
+  };
+
+  const handleCreatePoi = async () => {
+    const label = poiLabel.trim();
+    if (!onCreatePoi || !label) return;
+    setPoiSaving(true);
+    setPoiError(null);
+    try {
+      await onCreatePoi(poiTimeSec, label);
+      setShowPoiDialog(false);
+    } catch (error) {
+      setPoiError(
+        error instanceof Error ? error.message : "Failed to create POI",
+      );
+    } finally {
+      setPoiSaving(false);
+    }
+  };
+
+  const handleDeletePoi = async (poiId: string) => {
+    if (!onDeletePoi) return;
+    setPoiError(null);
+    try {
+      await onDeletePoi(poiId);
+    } catch (error) {
+      setPoiError(
+        error instanceof Error ? error.message : "Failed to delete POI",
+      );
+    }
+  };
+
+  useHotkeys([
+    ["space", () => (isPlaying ? onPauseBoth() : onPlayBoth())],
+    ["ArrowLeft", () => seekRelative(-KEYBOARD_SEEK_SECONDS)],
+    ["ArrowRight", () => seekRelative(KEYBOARD_SEEK_SECONDS)],
+    [",", () => !isPlaying && seekRelative(-FRAME_STEP_SECONDS)],
+    [".", () => !isPlaying && seekRelative(FRAME_STEP_SECONDS)],
+  ]);
 
   useEffect(() => {
     const v = frontRef.current || rearRef.current;
@@ -463,6 +547,35 @@ export function Player({
       v.removeEventListener("seeked", handler);
     };
   }, [onTimeUpdate, pair?.id]);
+
+  useEffect(() => {
+    const video = frontRef.current || rearRef.current;
+    if (!video || !onTimeUpdate || !isPlaying) return;
+
+    let videoFrameId: number | null = null;
+    let animationFrameId: number | null = null;
+    const supportsVideoFrameCallback =
+      typeof video.requestVideoFrameCallback === "function" &&
+      typeof video.cancelVideoFrameCallback === "function";
+
+    const updatePlaybackTime = () => {
+      onTimeUpdate(video.currentTime || 0);
+      if (supportsVideoFrameCallback) {
+        videoFrameId = video.requestVideoFrameCallback(updatePlaybackTime);
+      } else {
+        animationFrameId = requestAnimationFrame(updatePlaybackTime);
+      }
+    };
+
+    updatePlaybackTime();
+
+    return () => {
+      if (videoFrameId !== null) {
+        video.cancelVideoFrameCallback(videoFrameId);
+      }
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+    };
+  }, [isPlaying, onTimeUpdate, pair?.id]);
 
   useEffect(() => {
     if (!seekRequest) return;
@@ -515,10 +628,33 @@ export function Player({
     };
   }, [frontRef.current, rearRef.current]);
 
-  const marks = useMemo(
-    () => getMinMarksForLength(pair?.durationSec || 0),
-    [pair?.durationSec],
-  );
+  const marks = useMemo(() => {
+    const timelineMarks = getMinMarksForLength(pair?.durationSec || 0);
+    for (const poi of pois) {
+      const poiIndicator = (
+        <Box
+          component="span"
+          title={`${poi.label} at ${formatTime(poi.timeSec)}`}
+          sx={{ color: "#f97316" }}>
+          ◆
+        </Box>
+      );
+      const existingMark = timelineMarks.find(
+        (mark) => Math.abs(mark.value - poi.timeSec) < 0.01,
+      );
+      if (existingMark) {
+        existingMark.label = (
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <span>{existingMark.label}</span>
+            {poiIndicator}
+          </Stack>
+        );
+      } else {
+        timelineMarks.push({ value: poi.timeSec, label: poiIndicator });
+      }
+    }
+    return timelineMarks.sort((a, b) => a.value - b.value);
+  }, [pair?.durationSec, pois]);
 
   if (!pair)
     return (
@@ -615,6 +751,15 @@ export function Player({
             </Stack>
 
             <Box sx={{ flex: 1 }} />
+
+            <IconButton
+              aria-label="Mark point of interest"
+              size="sm"
+              color="warning"
+              variant="outlined"
+              onClick={handleOpenPoiDialog}>
+              <AddLocationAltIcon />
+            </IconButton>
 
             {/* Create Clip Button */}
             <IconButton
@@ -928,6 +1073,92 @@ export function Player({
           </Stack>
         )}
       </Stack>
+
+      <Modal open={showPoiDialog} onClose={() => setShowPoiDialog(false)}>
+        <ModalDialog sx={{ width: "min(520px, calc(100vw - 32px))" }}>
+          <DialogTitle>Points of interest</DialogTitle>
+          <DialogContent>
+            Mark something visible at {formatTime(poiTimeSec)} or jump to an
+            existing marker.
+          </DialogContent>
+          <Stack spacing={1.5}>
+            <FormControl>
+              <FormLabel>POI label</FormLabel>
+              <Input
+                autoFocus
+                value={poiLabel}
+                placeholder="What is visible here?"
+                slotProps={{ input: { maxLength: 120 } }}
+                onChange={(event) => setPoiLabel(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void handleCreatePoi();
+                }}
+              />
+            </FormControl>
+
+            <Button
+              startDecorator={<AddLocationAltIcon />}
+              loading={poiSaving}
+              disabled={!poiLabel.trim() || !onCreatePoi}
+              onClick={() => void handleCreatePoi()}>
+              Add POI at {formatTime(poiTimeSec)}
+            </Button>
+
+            {poiError && (
+              <Typography color="danger" level="body-sm">
+                {poiError}
+              </Typography>
+            )}
+
+            <Box sx={{ maxHeight: 240, overflowY: "auto" }}>
+              {poisLoading ? (
+                <Typography level="body-sm">Loading POIs…</Typography>
+              ) : pois.length === 0 ? (
+                <Typography level="body-sm" sx={{ color: "text.secondary" }}>
+                  No points of interest marked yet.
+                </Typography>
+              ) : (
+                <Stack spacing={0.5}>
+                  {pois.map((poi) => (
+                    <Stack
+                      key={poi.id}
+                      direction="row"
+                      spacing={0.5}
+                      alignItems="center">
+                      <Button
+                        variant="plain"
+                        color="neutral"
+                        startDecorator={<LocationOnIcon color="warning" />}
+                        onClick={() => {
+                          seekTo(poi.timeSec);
+                          setShowPoiDialog(false);
+                        }}
+                        sx={{ flex: 1, justifyContent: "flex-start" }}>
+                        {formatTime(poi.timeSec)} · {poi.label}
+                      </Button>
+                      <IconButton
+                        aria-label={`Delete ${poi.label}`}
+                        color="danger"
+                        variant="plain"
+                        onClick={() => void handleDeletePoi(poi.id)}>
+                        <DeleteOutlineIcon />
+                      </IconButton>
+                    </Stack>
+                  ))}
+                </Stack>
+              )}
+            </Box>
+          </Stack>
+          <DialogActions>
+            <Button
+              variant="plain"
+              color="neutral"
+              onClick={() => setShowPoiDialog(false)}>
+              Close
+            </Button>
+          </DialogActions>
+        </ModalDialog>
+      </Modal>
 
       {/* Clip Creation Dialog */}
       <Modal open={showClipDialog} onClose={handleCloseClipDialog}>

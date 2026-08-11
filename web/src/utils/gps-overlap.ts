@@ -6,8 +6,74 @@ export interface GpsOverlapLocation {
   recordingIds: string[];
 }
 
-/** Approximate 100-metre cells used to reveal routes shared by recordings. */
-const OVERLAP_CELL_DEGREES = 0.001;
+interface ProjectedPoint {
+  x: number;
+  y: number;
+}
+
+export function spaceGpsOverlapLocations(
+  locations: readonly GpsOverlapLocation[],
+  project: (lat: number, lon: number) => ProjectedPoint,
+  minimumSpacing: number,
+): GpsOverlapLocation[] {
+  if (minimumSpacing <= 0) return [...locations];
+
+  const grid = new Map<string, number[]>();
+  const spaced: Array<
+    GpsOverlapLocation & { point: ProjectedPoint; ids: Set<string> }
+  > = [];
+  const sorted = [...locations].sort(
+    (a, b) => b.recordingIds.length - a.recordingIds.length,
+  );
+
+  for (const location of sorted) {
+    const point = project(location.lat, location.lon);
+    const cellX = Math.floor(point.x / minimumSpacing);
+    const cellY = Math.floor(point.y / minimumSpacing);
+    let nearestIndex: number | undefined;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    for (let x = cellX - 1; x <= cellX + 1; x++) {
+      for (let y = cellY - 1; y <= cellY + 1; y++) {
+        for (const index of grid.get(`${x}:${y}`) || []) {
+          const candidate = spaced[index];
+          const distance =
+            (candidate.point.x - point.x) ** 2 +
+            (candidate.point.y - point.y) ** 2;
+          if (distance < minimumSpacing ** 2 && distance < nearestDistance) {
+            nearestIndex = index;
+            nearestDistance = distance;
+          }
+        }
+      }
+    }
+
+    if (nearestIndex !== undefined) {
+      for (const id of location.recordingIds) {
+        spaced[nearestIndex].ids.add(id);
+      }
+      continue;
+    }
+
+    const index = spaced.length;
+    spaced.push({
+      ...location,
+      point,
+      ids: new Set(location.recordingIds),
+    });
+    const key = `${cellX}:${cellY}`;
+    grid.set(key, [...(grid.get(key) || []), index]);
+  }
+
+  return spaced.map(({ lat, lon, ids }) => ({
+    lat,
+    lon,
+    recordingIds: [...ids].sort((a, b) => a.localeCompare(b)),
+  }));
+}
+
+/** Approximate 300-metre cells used to reveal routes shared by recordings. */
+const OVERLAP_CELL_DEGREES = 0.003;
 
 export function buildGpsOverlapLocations(
   tracks: readonly GpsMapTrack[],

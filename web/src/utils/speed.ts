@@ -44,10 +44,7 @@ export function distanceMeters(
   return (
     2 *
     EARTH_RADIUS_METERS *
-    Math.atan2(
-      Math.sqrt(clampedHaversine),
-      Math.sqrt(1 - clampedHaversine),
-    )
+    Math.atan2(Math.sqrt(clampedHaversine), Math.sqrt(1 - clampedHaversine))
   );
 }
 
@@ -73,6 +70,37 @@ export function buildSpeedSegments(points: TimedCoordinate[]): SpeedSegment[] {
     if (speedKph !== null) segments.push({ from, to, speedKph });
   }
   return segments;
+}
+
+export function calculateSpeedAtTime(
+  points: readonly TimedCoordinate[],
+  timeSec: number,
+): number | null {
+  if (
+    points.length < 2 ||
+    !Number.isFinite(timeSec) ||
+    timeSec < points[0].tsSec ||
+    timeSec > points.at(-1)!.tsSec
+  ) {
+    return null;
+  }
+
+  if (timeSec === points.at(-1)!.tsSec) {
+    return calculateSpeedKph(points.at(-2)!, points.at(-1)!);
+  }
+
+  let lowerIndex = 0;
+  let upperIndex = points.length - 1;
+  while (lowerIndex + 1 < upperIndex) {
+    const middleIndex = Math.floor((lowerIndex + upperIndex) / 2);
+    if (points[middleIndex].tsSec <= timeSec) {
+      lowerIndex = middleIndex;
+    } else {
+      upperIndex = middleIndex;
+    }
+  }
+
+  return calculateSpeedKph(points[lowerIndex], points[upperIndex]);
 }
 
 export function speedColor(speedKph: number): string {
