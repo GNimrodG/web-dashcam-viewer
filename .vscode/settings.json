@@ -1,5 +1,6 @@
 {
     "cSpell.words": [
         "fssync"
-    ]
+    ],
+    "postman.settings.dotenv-detection-notification-visibility": false
 }

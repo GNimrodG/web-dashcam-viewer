@@ -1,7 +1,11 @@
 # Multi-stage build for web-dashcam-viewer
 
+ARG YARN_NETWORK_TIMEOUT=600000
+
 # Stage 1: Install dependencies (shared)
 FROM node:22-alpine AS deps
+
+ARG YARN_NETWORK_TIMEOUT
 
 WORKDIR /app
 
@@ -13,7 +17,14 @@ COPY web/package.json ./web/
 COPY server/package.json server/tsconfig.json ./server/
 
 # Install all dependencies (workspace mode)
-RUN yarn install --frozen-lockfile
+RUN for attempt in 1 2 3; do \
+      yarn install --frozen-lockfile --network-timeout "$YARN_NETWORK_TIMEOUT" && exit 0; \
+      if [ "$attempt" -lt 3 ]; then \
+        echo "Yarn install failed (attempt $attempt/3), retrying..."; \
+        sleep $((attempt * 10)); \
+      fi; \
+    done; \
+    exit 1
 
 # Stage 2: Build frontend
 FROM node:22-alpine AS frontend-builder
@@ -54,6 +65,8 @@ RUN yarn build
 # Stage 4: Production image
 FROM node:22-alpine
 
+ARG YARN_NETWORK_TIMEOUT
+
 # Install FFmpeg and exiftool for video processing
 RUN apk add --no-cache ffmpeg perl-image-exiftool
 
@@ -67,7 +80,14 @@ COPY server/package.json server/tsconfig.json ./server/
 COPY --from=backend-builder /app/server/dist ./server/dist
 
 # Install production dependencies only
-RUN yarn install --frozen-lockfile --production
+RUN for attempt in 1 2 3; do \
+      yarn install --frozen-lockfile --production --network-timeout "$YARN_NETWORK_TIMEOUT" && exit 0; \
+      if [ "$attempt" -lt 3 ]; then \
+        echo "Yarn install failed (attempt $attempt/3), retrying..."; \
+        sleep $((attempt * 10)); \
+      fi; \
+    done; \
+    exit 1
 
 # Copy frontend build
 COPY --from=frontend-builder /app/web/dist ./web/dist
