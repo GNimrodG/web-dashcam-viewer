@@ -4,7 +4,12 @@ import fs from "node:fs/promises";
 import fssync from "node:fs";
 import chokidar from "chokidar";
 import { ffprobe, FFProbeResult, parseISO6709 } from "./ffprobe.js";
-import { extractTimedGpsTrack, loadRecordedGpxTrack } from "./gps.js";
+import {
+  GPS_EXTRACTION_VERSION,
+  extractTimedGpsTrack,
+  hasCurrentNoGpsResult,
+  loadRecordedGpxTrack,
+} from "./gps.js";
 import { reverseGeocodeDetailed } from "./geocode.js";
 import { parseFilenameForPairing } from "../utils/pairing.js";
 import type { VideoPair, VideoFile, GpsPoint } from "../types.js";
@@ -607,7 +612,10 @@ export function registerStoredGpsForPair(id: string): void {
   resetGpsDerivedLocationForPair(id);
   invalidateGpsTrackForPair(id);
   for (const channel of Object.values(pair.channels)) {
-    if (channel) channel.noGps = false;
+    if (channel) {
+      channel.noGps = false;
+      channel.gpsExtractionVersion = GPS_EXTRACTION_VERSION;
+    }
   }
   scheduleSave();
 }
@@ -721,9 +729,11 @@ function startGpsExtraction(
         if (pair.channels.front) {
           result.front = recorded;
           pair.channels.front.noGps = false;
+          pair.channels.front.gpsExtractionVersion = GPS_EXTRACTION_VERSION;
         } else if (pair.channels.rear) {
           result.rear = recorded;
           pair.channels.rear.noGps = false;
+          pair.channels.rear.gpsExtractionVersion = GPS_EXTRACTION_VERSION;
         }
         if (updateLocations) {
           try {
@@ -737,8 +747,8 @@ function startGpsExtraction(
       }
 
       if (
-        (!pair.channels.front || pair.channels.front.noGps) &&
-        (!pair.channels.rear || pair.channels.rear.noGps)
+        hasCurrentNoGpsResult(pair.channels.front) &&
+        hasCurrentNoGpsResult(pair.channels.rear)
       ) {
         logger.info("Pair marked as no GPS data: " + id);
         return {};
@@ -751,6 +761,7 @@ function startGpsExtraction(
           result.front = await extractTimedGpsTrack(pair.channels.front.path);
         }
         pair.channels.front.noGps = !result.front.length;
+        pair.channels.front.gpsExtractionVersion = GPS_EXTRACTION_VERSION;
         logger.info(
           `Extracted GPS track for front channel: ${pair.channels.front.path}`,
         );
@@ -760,6 +771,7 @@ function startGpsExtraction(
           result.rear = await extractTimedGpsTrack(pair.channels.rear.path);
         }
         pair.channels.rear.noGps = !result.rear.length;
+        pair.channels.rear.gpsExtractionVersion = GPS_EXTRACTION_VERSION;
         logger.info(
           `Extracted GPS track for rear channel: ${pair.channels.rear.path}`,
         );

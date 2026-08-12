@@ -15,6 +15,7 @@ export interface VideoFile {
   channel?: Channel;
   important?: boolean; // user-marked important
   noGps?: boolean; // true if we know there's no GPS data at all
+  gpsExtractionVersion?: number;
 }
 
 export interface VideoPair {

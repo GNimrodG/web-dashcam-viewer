@@ -20,6 +20,7 @@ export function buildGpsMapSignature(pairs: readonly VideoPair[]): string {
         size: file.size,
         mtimeMs: file.mtimeMs,
         noGps: file.noGps,
+        gpsExtractionVersion: file.gpsExtractionVersion,
       }))
       .sort((a, b) => a.channel.localeCompare(b.channel)),
   }));

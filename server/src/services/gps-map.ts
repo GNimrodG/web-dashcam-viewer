@@ -9,6 +9,7 @@ import {
 } from "../utils/gps-map.js";
 import { getGpsTrackForPair, getVideoPairs } from "./indexer.js";
 import { logger } from "../logger.js";
+import { hasCurrentNoGpsResult } from "./gps.js";
 
 export interface GpsMapTrack {
   id: string;
@@ -94,8 +95,8 @@ async function buildCatalog(
   const candidates = pairs.filter(
     (pair) =>
       !(
-        (!pair.channels.front || pair.channels.front.noGps) &&
-        (!pair.channels.rear || pair.channels.rear.noGps)
+        hasCurrentNoGpsResult(pair.channels.front) &&
+        hasCurrentNoGpsResult(pair.channels.rear)
       ),
   );
   const tracks = await Promise.all(

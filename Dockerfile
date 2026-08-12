@@ -67,8 +67,10 @@ FROM node:22-alpine
 
 ARG YARN_NETWORK_TIMEOUT
 
-# Install FFmpeg and exiftool for video processing
-RUN apk add --no-cache ffmpeg perl-image-exiftool
+# Install video and metadata extraction tools
+RUN apk add --no-cache ffmpeg exiftool \
+    && ffprobe -version >/dev/null \
+    && exiftool -ver >/dev/null
 
 WORKDIR /app
 

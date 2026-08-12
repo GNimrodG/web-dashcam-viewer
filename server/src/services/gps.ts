@@ -5,6 +5,36 @@ import { processManager } from "../utils/process-manager.js";
 import fs from "node:fs";
 import path from "node:path";
 
+export const GPS_EXTRACTION_VERSION = 2;
+const GPS_CACHE_VERSION = GPS_EXTRACTION_VERSION;
+
+interface GpsCacheEntry {
+  version?: number;
+  mtimeMs: number;
+  data: GpsPoint[];
+}
+
+export function isGpsCacheUsable(
+  cached: GpsCacheEntry | undefined,
+  mtimeMs: number,
+): boolean {
+  return !!(
+    cached?.mtimeMs === mtimeMs &&
+    Array.isArray(cached.data) &&
+    (cached.version === GPS_CACHE_VERSION || cached.data.length > 0)
+  );
+}
+
+export function hasCurrentNoGpsResult(
+  file: { noGps?: boolean; gpsExtractionVersion?: number } | null | undefined,
+): boolean {
+  return (
+    !file ||
+    (file.noGps === true &&
+      file.gpsExtractionVersion === GPS_EXTRACTION_VERSION)
+  );
+}
+
 // Persistent file-based cache: stores a JSON file per video (e.g., myvideo.mp4.gpscache.json)
 // Can be redirected to local disk for network shares via GPS_CACHE_DIR
 function getGpsCachePath(filePath: string) {
@@ -108,12 +138,12 @@ export async function extractTimedGpsTrack(
   const mtimeMs = stat.mtimeMs;
   const cachePath = getGpsCachePath(filePath);
   // Try to read cache
-  let cached: { mtimeMs: number; data: GpsPoint[] } | undefined;
+  let cached: GpsCacheEntry | undefined;
   try {
     if (fs.existsSync(cachePath)) {
       const raw = fs.readFileSync(cachePath, "utf8");
       cached = JSON.parse(raw);
-      if (cached?.mtimeMs === mtimeMs && Array.isArray(cached.data)) {
+      if (cached && isGpsCacheUsable(cached, mtimeMs)) {
         if (cached.data.length === 0) {
           logger.debug(`GPS cache hit (no GPS data): ${cachePath}`);
         } else {
@@ -122,6 +152,13 @@ export async function extractTimedGpsTrack(
           );
         }
         return cached.data;
+      }
+      if (
+        cached?.mtimeMs === mtimeMs &&
+        Array.isArray(cached.data) &&
+        cached.data.length === 0
+      ) {
+        logger.info(`Retrying legacy empty GPS cache: ${cachePath}`);
       }
     }
   } catch (e) {
@@ -177,7 +214,11 @@ export async function extractTimedGpsTrack(
 
   // Write cache
   try {
-    fs.writeFileSync(cachePath, JSON.stringify({ mtimeMs, data }), "utf8");
+    fs.writeFileSync(
+      cachePath,
+      JSON.stringify({ version: GPS_CACHE_VERSION, mtimeMs, data }),
+      "utf8",
+    );
     if (data.length === 0) {
       logger.info(`No GPS data found in: ${filePath}`);
     } else {
@@ -251,7 +292,7 @@ async function extractViaExifToolCSV(filePath: string): Promise<GpsPoint[]> {
         `[ExifTool] GPS extraction finished with exit code ${result.exitCode} for: ${filePath}`,
       );
     } catch (error) {
-      logger.debug(`[ExifTool] Extraction failed: ${error}`);
+      logger.warn({ error }, `[ExifTool] Extraction failed for: ${filePath}`);
       return [];
     }
 
@@ -321,7 +362,7 @@ async function extractViaExifToolCSV(filePath: string): Promise<GpsPoint[]> {
     logger.info(`[ExifTool] Extracted ${deduped.length} GPS points`);
     return deduped;
   } catch (error) {
-    logger.debug(`[ExifTool] Extraction error: ${error}`);
+    logger.warn({ error }, `[ExifTool] Extraction error for: ${filePath}`);
     return [];
   }
 }

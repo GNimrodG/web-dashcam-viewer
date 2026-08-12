@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildGpsMapSignature, sampleGpsTrack } from "./gps-map.js";
+import type { VideoPair } from "../types.js";
 
 test("samples long GPS tracks while retaining both endpoints", () => {
   const points = Array.from({ length: 1000 }, (_, index) => ({
@@ -50,4 +51,21 @@ test("GPS map signatures change when a recording source changes", () => {
   ]);
   assert.equal(unchanged, original);
   assert.notEqual(changed, original);
+});
+
+test("GPS map signatures change when the extractor version changes", () => {
+  const pair: VideoPair = {
+    id: "20260326_160911",
+    channels: {
+      front: {
+        path: "recording.mp4",
+        filename: "recording.mp4",
+        size: 100,
+      },
+    },
+  };
+  pair.channels.front!.noGps = true;
+  const legacySignature = buildGpsMapSignature([pair]);
+  pair.channels.front!.gpsExtractionVersion = 2;
+  assert.notEqual(buildGpsMapSignature([pair]), legacySignature);
 });
