@@ -1,5 +1,12 @@
 import { useRef, useEffect, useState, useMemo } from "react";
-import { VideoPair, videoSourceUrl, createClip, type VideoPoi } from "../api";
+import {
+  VideoPair,
+  videoSourceUrl,
+  createClip,
+  watchClipJob,
+  type ClipJobStatus,
+  type VideoPoi,
+} from "../api";
 import Box from "@mui/joy/Box";
 import Stack from "@mui/joy/Stack";
 import Typography from "@mui/joy/Typography";
@@ -39,6 +46,7 @@ import AddLocationAltIcon from "@mui/icons-material/AddLocationAlt";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import Input from "@mui/joy/Input";
+import LinearProgress from "@mui/joy/LinearProgress";
 import {
   clampPlaybackTime,
   FRAME_STEP_SECONDS,
@@ -129,6 +137,10 @@ export function Player({
   >("front");
   const [clipAudioVolume, setClipAudioVolume] = useState(1); // 0-1 (0=mute, 1=original)
   const [isCreatingClip, setIsCreatingClip] = useState(false);
+  const [clipJobStatus, setClipJobStatus] = useState<ClipJobStatus | null>(
+    null,
+  );
+  const clipJobCleanupRef = useRef<(() => void) | null>(null);
   const [showPoiDialog, setShowPoiDialog] = useState(false);
   const [poiTimeSec, setPoiTimeSec] = useState(0);
   const [poiLabel, setPoiLabel] = useState("");
@@ -158,19 +170,24 @@ export function Player({
     }
 
     setShowClipDialog(true);
+    setClipJobStatus(null);
 
     // Update preview frames after a short delay to ensure dialog is rendered
     setTimeout(updatePreviewFrames, 100);
   };
 
-  const handleCloseClipDialog = () => {
-    // Restore original video positions
+  const restoreClipPreviewPosition = () => {
     if (frontRef.current) {
       frontRef.current.currentTime = originalTimeFrontRef.current;
     }
     if (rearRef.current) {
       rearRef.current.currentTime = originalTimeRearRef.current;
     }
+  };
+
+  const handleCloseClipDialog = () => {
+    if (isCreatingClip) return;
+    restoreClipPreviewPosition();
     setShowClipDialog(false);
   };
 
@@ -286,24 +303,48 @@ export function Player({
     if (!pair) return;
 
     setIsCreatingClip(true);
+    setClipJobStatus(null);
     try {
-      const result = await createClip(
+      const job = await createClip(
         pair.id,
         clipStartTime,
         clipEndTime,
         clipChannels,
         clipAudioVolume,
       );
-      window.open(result.downloadUrl, "_blank");
-
-      handleCloseClipDialog();
+      await new Promise<void>((resolve, reject) => {
+        clipJobCleanupRef.current = watchClipJob(job.statusUrl, (status) => {
+          setClipJobStatus(status);
+          if (status.state === "completed" && status.result) {
+            window.open(status.result.downloadUrl, "_blank");
+            resolve();
+          } else if (status.state === "failed") {
+            reject(new Error(status.error || "Clip generation failed"));
+          }
+        });
+      });
+      restoreClipPreviewPosition();
+      setShowClipDialog(false);
     } catch (err) {
       console.error("Clip creation failed:", err);
-      alert("Failed to create clip. Check console for details.");
+      alert(
+        err instanceof Error
+          ? `Failed to create clip: ${err.message}`
+          : "Failed to create clip. Check console for details.",
+      );
     } finally {
+      clipJobCleanupRef.current?.();
+      clipJobCleanupRef.current = null;
       setIsCreatingClip(false);
     }
   };
+
+  useEffect(
+    () => () => {
+      clipJobCleanupRef.current?.();
+    },
+    [],
+  );
 
   /**
    * Capture a frame from a video element and return as canvas
@@ -1299,6 +1340,39 @@ export function Player({
                   valueLabelFormat={(value) => `${Math.round(value * 100)}%`}
                 />
               </FormControl>
+
+              {isCreatingClip && (
+                <Box>
+                  <Stack
+                    direction="row"
+                    justifyContent="space-between"
+                    sx={{ mb: 0.75 }}>
+                    <Typography level="body-sm">
+                      {clipJobStatus?.progress.phase === "finalizing"
+                        ? "Finalizing clip…"
+                        : clipJobStatus?.state === "queued"
+                          ? "Waiting to start…"
+                          : "Generating clip…"}
+                    </Typography>
+                    <Typography level="body-sm" fontWeight="lg">
+                      {Math.round(clipJobStatus?.progress.percent ?? 0)}%
+                    </Typography>
+                  </Stack>
+                  <LinearProgress
+                    determinate
+                    value={clipJobStatus?.progress.percent ?? 0}
+                    aria-label="Clip generation progress"
+                  />
+                  {clipJobStatus?.progress && (
+                    <Typography level="body-xs" sx={{ mt: 0.75 }}>
+                      {formatTime(clipJobStatus.progress.processedSeconds)} of{" "}
+                      {formatTime(clipJobStatus.progress.durationSeconds)}
+                      {clipJobStatus.progress.speed !== undefined &&
+                        ` • ${clipJobStatus.progress.speed.toFixed(2)}× encoding speed`}
+                    </Typography>
+                  )}
+                </Box>
+              )}
             </Stack>
           </DialogContent>
           <DialogActions>

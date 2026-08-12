@@ -1,5 +1,15 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import { logger } from "../logger.js";
+
+export interface ClipProgress {
+  percent: number;
+  processedSeconds: number;
+  durationSeconds: number;
+  fps?: number;
+  speed?: number;
+  phase: "encoding" | "finalizing" | "completed";
+}
 
 export interface ClipOptions {
   startTime: number; // seconds
@@ -7,6 +17,31 @@ export interface ClipOptions {
   channels: "front" | "rear" | "both-stacked" | "both-side-by-side";
   outputPath: string;
   audioVolume?: number; // 0-1 (0 = mute, 0.5 = half, 1 = original)
+  onProgress?: (progress: ClipProgress) => void;
+}
+
+export function buildClipProgress(
+  values: Readonly<Record<string, string>>,
+  durationSeconds: number,
+): ClipProgress {
+  const rawMicroseconds = Number(values.out_time_us ?? values.out_time_ms);
+  const processedSeconds = Number.isFinite(rawMicroseconds)
+    ? Math.max(0, Math.min(durationSeconds, rawMicroseconds / 1_000_000))
+    : 0;
+  const fps = Number(values.fps);
+  const speed = Number(values.speed?.replace(/x$/i, ""));
+
+  return {
+    percent: Math.min(
+      99,
+      Math.max(0, (processedSeconds / durationSeconds) * 100),
+    ),
+    processedSeconds,
+    durationSeconds,
+    ...(Number.isFinite(fps) ? { fps } : {}),
+    ...(Number.isFinite(speed) ? { speed } : {}),
+    phase: values.progress === "end" ? "finalizing" : "encoding",
+  };
 }
 
 /**
@@ -17,8 +52,16 @@ export async function createClip(
   rearPath: string | null,
   options: ClipOptions,
 ): Promise<void> {
-  const { startTime, endTime, channels, outputPath, audioVolume = 1 } = options;
+  const {
+    startTime,
+    endTime,
+    channels,
+    outputPath,
+    audioVolume = 1,
+    onProgress,
+  } = options;
   const duration = endTime - startTime;
+  const partialOutputPath = `${outputPath}.partial`;
 
   if (duration <= 0) {
     throw new Error("End time must be after start time");
@@ -115,7 +158,15 @@ export async function createClip(
     args.push("-c:a", "aac", "-b:a", "128k");
   }
 
-  args.push("-y", outputPath); // Overwrite output
+  args.push(
+    "-progress",
+    "pipe:1",
+    "-nostats",
+    "-f",
+    "mp4",
+    "-y",
+    partialOutputPath,
+  );
 
   logger.info({ args, outputPath }, "Starting ffmpeg clip generation");
 
@@ -123,6 +174,32 @@ export async function createClip(
     const ffmpeg = spawn("ffmpeg", args);
 
     let stderr = "";
+    let progressBuffer = "";
+    let progressValues: Record<string, string> = {};
+
+    onProgress?.({
+      percent: 0,
+      processedSeconds: 0,
+      durationSeconds: duration,
+      phase: "encoding",
+    });
+
+    ffmpeg.stdout.on("data", (data) => {
+      progressBuffer += data.toString();
+      const lines = progressBuffer.split(/\r?\n/);
+      progressBuffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const separator = line.indexOf("=");
+        if (separator < 1) continue;
+        const key = line.slice(0, separator);
+        progressValues[key] = line.slice(separator + 1);
+        if (key === "progress") {
+          onProgress?.(buildClipProgress(progressValues, duration));
+          progressValues = {};
+        }
+      }
+    });
 
     ffmpeg.stderr.on("data", (data) => {
       stderr += data.toString();
@@ -130,15 +207,29 @@ export async function createClip(
 
     ffmpeg.on("close", (code) => {
       if (code === 0) {
-        logger.info({ outputPath }, "Clip generated successfully");
-        resolve();
+        try {
+          fs.renameSync(partialOutputPath, outputPath);
+          onProgress?.({
+            percent: 100,
+            processedSeconds: duration,
+            durationSeconds: duration,
+            phase: "completed",
+          });
+          logger.info({ outputPath }, "Clip generated successfully");
+          resolve();
+        } catch (error) {
+          logger.error({ error, outputPath }, "Failed to finalize clip");
+          reject(error);
+        }
       } else {
+        fs.rmSync(partialOutputPath, { force: true });
         logger.error({ code, stderr }, "ffmpeg failed");
         reject(new Error(`ffmpeg exited with code ${code}`));
       }
     });
 
     ffmpeg.on("error", (err) => {
+      fs.rmSync(partialOutputPath, { force: true });
       logger.error({ err }, "ffmpeg spawn error");
       reject(err);
     });

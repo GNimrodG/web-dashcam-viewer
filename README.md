@@ -178,7 +178,8 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `GET /api/videos/clips` - List generated clips
 - `GET /api/videos/clips/:filename` - Stream a generated clip
 - `GET /api/videos/clips/:filename/thumbnail` - Get clip thumbnail
-- `POST /api/videos/:id/clip` - Create clip from time range
+- `POST /api/videos/:id/clip` - Start clip generation from a time range
+- `GET /api/videos/clip-jobs/:jobId/status` - Stream clip progress and completion status
 - `POST /api/videos/reindex` - Trigger manual re-indexing
 - `POST /api/videos/backfill/locations` - Backfill missing location names
 - `PATCH /api/videos/:id/location` - Update location manually

@@ -221,12 +221,7 @@ export async function createClip(
   endTime: number,
   channels: "front" | "rear" | "both-stacked" | "both-side-by-side",
   audioVolume?: number,
-): Promise<{
-  success: boolean;
-  message: string;
-  filename: string;
-  downloadUrl: string;
-}> {
+): Promise<{ jobId: string; statusUrl: string }> {
   const { data } = await api.post(`/videos/${pairId}/clip`, {
     startTime,
     endTime,
@@ -234,6 +229,41 @@ export async function createClip(
     audioVolume,
   });
   return data;
+}
+
+export interface ClipGenerationProgress {
+  percent: number;
+  processedSeconds: number;
+  durationSeconds: number;
+  fps?: number;
+  speed?: number;
+  phase: "encoding" | "finalizing" | "completed";
+}
+
+export interface ClipJobStatus {
+  id: string;
+  state: "queued" | "running" | "completed" | "failed";
+  progress: ClipGenerationProgress;
+  result?: { filename: string; downloadUrl: string };
+  error?: string;
+}
+
+export function watchClipJob(
+  statusUrl: string,
+  onStatus: (status: ClipJobStatus) => void,
+): () => void {
+  const eventSource = new EventSource(statusUrl);
+  eventSource.onmessage = (event) => {
+    const status = JSON.parse(event.data) as ClipJobStatus;
+    onStatus(status);
+    if (status.state === "completed" || status.state === "failed") {
+      eventSource.close();
+    }
+  };
+  eventSource.onerror = () => {
+    if (eventSource.readyState === EventSource.CLOSED) return;
+  };
+  return () => eventSource.close();
 }
 
 export function videoSourceUrl(id: string, channel: "front" | "rear") {

@@ -13,6 +13,7 @@ import {
   updatePairTimeZone,
 } from "../services/indexer.js";
 import { createClip } from "../services/clipper.js";
+import { getClipJob, startClipJob } from "../services/clip-jobs.js";
 import { generateGPX } from "../services/gpx.js";
 import { saveRecordedGpxTrack } from "../services/gps.js";
 import { ensureThumbnail, getThumbnailPath } from "../services/thumbnail.js";
@@ -127,6 +128,43 @@ router.get("/gps-queue-status", (_req, res) => {
   _req.on("close", () => {
     clearInterval(interval);
     res.end();
+  });
+});
+
+router.get("/clip-jobs/:jobId/status", (req, res) => {
+  if (!getClipJob(req.params.jobId)) {
+    return res.status(404).json({ error: "Clip generation job not found" });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  let interval: NodeJS.Timeout | undefined;
+  const sendStatus = () => {
+    const job = getClipJob(req.params.jobId);
+    if (!job) {
+      res.write(
+        `data: ${JSON.stringify({ state: "failed", error: "Clip generation job expired" })}\n\n`,
+      );
+      if (interval) clearInterval(interval);
+      return res.end();
+    }
+
+    res.write(`data: ${JSON.stringify(job)}\n\n`);
+    if (job.state === "completed" || job.state === "failed") {
+      if (interval) clearInterval(interval);
+      res.end();
+    }
+  };
+
+  sendStatus();
+  if (!res.writableEnded) interval = setInterval(sendStatus, 400);
+
+  req.on("close", () => {
+    if (interval) clearInterval(interval);
   });
 });
 
@@ -707,20 +745,25 @@ router.post("/:id/clip", async (req, res) => {
       fs.mkdirSync(clipsDir, { recursive: true });
     }
 
-    // Create clip and wait for completion
-    await createClip(frontPath, rearPath, {
-      startTime,
-      endTime,
-      channels,
-      outputPath,
-      audioVolume,
+    const job = startClipJob(endTime - startTime, async (onProgress) => {
+      await createClip(frontPath, rearPath, {
+        startTime,
+        endTime,
+        channels,
+        outputPath,
+        audioVolume,
+        onProgress,
+      });
+
+      return {
+        filename: outputFilename,
+        downloadUrl: `/api/videos/clips/${outputFilename}`,
+      };
     });
 
-    res.json({
-      success: true,
-      message: "Clip generated successfully",
-      filename: outputFilename,
-      downloadUrl: `/api/videos/clips/${outputFilename}`,
+    res.status(202).json({
+      jobId: job.id,
+      statusUrl: `/api/videos/clip-jobs/${job.id}/status`,
     });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || "Clip creation failed" });
