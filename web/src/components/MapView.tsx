@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import type { VideoPair, VideoPoi } from "../api";
+import {
+  deleteRecordedGps,
+  useEmbeddedGps,
+  type VideoPair,
+  type VideoPoi,
+} from "../api";
 import { MapContainer, TileLayer } from "react-leaflet";
 import { useGpsData } from "../hooks/useGpsData";
 import LinearProgress from "@mui/joy/LinearProgress";
@@ -10,7 +15,14 @@ import Typography from "@mui/joy/Typography";
 import CircularProgress from "@mui/joy/CircularProgress";
 import IconButton from "@mui/joy/IconButton";
 import DownloadIcon from "@mui/icons-material/Download";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import Tooltip from "@mui/joy/Tooltip";
+import Button from "@mui/joy/Button";
+import Modal from "@mui/joy/Modal";
+import ModalDialog from "@mui/joy/ModalDialog";
+import DialogTitle from "@mui/joy/DialogTitle";
+import DialogContent from "@mui/joy/DialogContent";
+import DialogActions from "@mui/joy/DialogActions";
 import VideoGpxUploader from "./VideoGpxUploader";
 import {
   buildSpeedSegments,
@@ -34,15 +46,69 @@ export default function MapView({
   pois = [],
   onPairUpdated,
 }: Readonly<Props>) {
-  const canAutoCrop =
-    !!pair?.startTime && Number.isFinite(pair?.durationSec ?? Number.NaN);
+  const canUploadGpx = Number.isFinite(pair?.durationSec ?? Number.NaN);
   const markerRef = useRef<L.Layer | null>(null);
   const mapRef = useRef<L.Map>(null);
   const linePointsRef = useRef<
     Array<{ tsSec: number; lat: number; lon: number }>
   >([]);
+  const currentPairIdRef = useRef(pair?.id);
+  const deletingPairIdRef = useRef<string | null>(null);
   const [currentSpeedKph, setCurrentSpeedKph] = useState<number | null>(null);
+  const [gpsRemovalMode, setGpsRemovalMode] = useState<
+    "external" | "all" | null
+  >(null);
+  const [gpsDeleteDialogOpen, setGpsDeleteDialogOpen] = useState(false);
+  const deletingGps = gpsRemovalMode !== null;
   const { gps, loading, error, refresh } = useGpsData(pair?.id || null);
+  const hasGpsTrack = !!(gps?.front?.length || gps?.rear?.length);
+  const hasFallbackLocation = !!(
+    pair?.channels.front?.location || pair?.channels.rear?.location
+  );
+  const hasGpsData = hasGpsTrack || (!pair?.gpsDisabled && hasFallbackLocation);
+
+  useEffect(() => {
+    currentPairIdRef.current = pair?.id;
+    setGpsRemovalMode(null);
+    setGpsDeleteDialogOpen(false);
+  }, [pair?.id]);
+
+  const handleGpsRemoval = async (mode: "external" | "all") => {
+    if (!pair || deletingGps) return;
+
+    setGpsRemovalMode(mode);
+    const deletingPairId = pair.id;
+    deletingPairIdRef.current = deletingPairId;
+    try {
+      const result =
+        mode === "external"
+          ? await useEmbeddedGps(deletingPairId)
+          : await deleteRecordedGps(deletingPairId);
+      if (currentPairIdRef.current === deletingPairId) {
+        onPairUpdated?.(result.pair);
+        refresh();
+        setGpsDeleteDialogOpen(false);
+        if (mode === "external" && !result.hasGps) {
+          globalThis.alert(
+            "The external GPX was removed, but no embedded GPS data was found in this recording.",
+          );
+        }
+      }
+    } catch (deleteError: any) {
+      if (currentPairIdRef.current === deletingPairId) {
+        globalThis.alert(
+          deleteError?.response?.data?.error ||
+            deleteError?.message ||
+            "Failed to update GPS data",
+        );
+      }
+    } finally {
+      if (deletingPairIdRef.current === deletingPairId) {
+        deletingPairIdRef.current = null;
+        setGpsRemovalMode(null);
+      }
+    }
+  };
 
   useEffect(() => {
     if (loading || error || !pair) return;
@@ -141,7 +207,7 @@ export default function MapView({
       markers.push(markerRef.current);
       const bounds = L.latLngBounds(coords);
       if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20] });
-    } else if (pair) {
+    } else if (pair && !pair.gpsDisabled) {
       // Fallback single geotag if available
       const loc = pair.channels.front?.location || pair.channels.rear?.location;
       if (loc) {
@@ -308,12 +374,13 @@ export default function MapView({
               p: 2,
             }}>
             <Box sx={{ pointerEvents: "auto", width: "100%", maxWidth: 520 }}>
-              {canAutoCrop ? (
+              {canUploadGpx ? (
                 <VideoGpxUploader
                   videoId={pair.id}
                   startTime={pair.startTime || null}
                   durationSec={pair.durationSec || null}
                   dashcamTimeZone={pair.dashcamTimeZone || "UTC"}
+                  recordingStartTimeOverride={pair.recordingStartTimeOverride}
                   onStored={(updatedPair) => {
                     refresh();
                     onPairUpdated?.(updatedPair);
@@ -324,8 +391,7 @@ export default function MapView({
           </Box>
         )}
 
-      {/* Download GPX Button */}
-      {!!pair && !!gps && !!(gps.front?.length || gps.rear?.length) && (
+      {!!pair && hasGpsData && (
         <Box
           sx={{
             position: "absolute",
@@ -336,12 +402,13 @@ export default function MapView({
             alignItems: "flex-start",
             gap: 1,
           }}>
-          {canAutoCrop && (
+          {canUploadGpx && (
             <VideoGpxUploader
               videoId={pair.id}
               startTime={pair.startTime || null}
               durationSec={pair.durationSec || null}
               dashcamTimeZone={pair.dashcamTimeZone || "UTC"}
+              recordingStartTimeOverride={pair.recordingStartTimeOverride}
               onStored={(updatedPair) => {
                 refresh();
                 onPairUpdated?.(updatedPair);
@@ -350,19 +417,94 @@ export default function MapView({
               compact
             />
           )}
-          <Tooltip title="Download GPS track as GPX" placement="left">
+          {hasGpsTrack && (
+            <Tooltip title="Download GPS track as GPX" placement="left">
+              <IconButton
+                variant="solid"
+                color="primary"
+                size="sm"
+                onClick={() => {
+                  window.open(`/api/videos/${pair.id}/gps/gpx`, "_blank");
+                }}>
+                <DownloadIcon />
+              </IconButton>
+            </Tooltip>
+          )}
+          <Tooltip title="Delete incorrect GPS data" placement="left">
             <IconButton
               variant="solid"
-              color="primary"
+              color="danger"
               size="sm"
-              onClick={() => {
-                window.open(`/api/videos/${pair.id}/gps/gpx`, "_blank");
-              }}>
-              <DownloadIcon />
+              disabled={deletingGps}
+              aria-label="Delete GPS data"
+              onClick={() => setGpsDeleteDialogOpen(true)}>
+              {deletingGps ? (
+                <CircularProgress size="sm" color="danger" />
+              ) : (
+                <DeleteOutlineIcon />
+              )}
             </IconButton>
           </Tooltip>
         </Box>
       )}
+
+      <Modal
+        open={gpsDeleteDialogOpen}
+        onClose={() => {
+          if (!deletingGps) setGpsDeleteDialogOpen(false);
+        }}>
+        <ModalDialog sx={{ width: "min(500px, calc(100vw - 32px))" }}>
+          <DialogTitle>Manage GPS data</DialogTitle>
+          <DialogContent>
+            {pair?.hasExternalGps && (
+              <Box
+                sx={{
+                  p: 1.5,
+                  mb: 2,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  borderRadius: "sm",
+                }}>
+                <Typography level="title-sm">Use embedded GPS data</Typography>
+                <Typography level="body-sm" sx={{ my: 1 }}>
+                  Remove only the uploaded GPX override and extract GPS from the
+                  recording again.
+                </Typography>
+                <Button
+                  variant="soft"
+                  color="primary"
+                  loading={gpsRemovalMode === "external"}
+                  disabled={deletingGps}
+                  onClick={() => void handleGpsRemoval("external")}>
+                  Remove external GPX
+                </Button>
+              </Box>
+            )}
+            <Typography level="title-sm">Delete all GPS data</Typography>
+            <Typography level="body-sm" sx={{ mt: 1 }}>
+              Remove uploaded and cached GPS data and keep embedded GPS hidden
+              until a replacement GPX is uploaded.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button
+              variant="plain"
+              color="neutral"
+              disabled={deletingGps}
+              onClick={() => setGpsDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="solid"
+              color="danger"
+              loading={gpsRemovalMode === "all"}
+              disabled={deletingGps}
+              onClick={() => void handleGpsRemoval("all")}>
+              Delete all GPS
+            </Button>
+          </DialogActions>
+        </ModalDialog>
+      </Modal>
 
       {currentSpeedKph !== null && (
         <Box

@@ -61,6 +61,9 @@ export interface VideoPair {
   endCity?: string;
   poiCount?: number;
   dashcamTimeZone?: string;
+  gpsDisabled?: boolean;
+  hasExternalGps?: boolean;
+  recordingStartTimeOverride?: string;
 }
 
 export interface GPSPoint {
@@ -103,6 +106,7 @@ export async function storeRecordedGpx(
   id: string,
   gpxXml: string,
   timeZone: string,
+  recordingStartTime: string | null,
 ): Promise<{
   success: boolean;
   message: string;
@@ -112,7 +116,27 @@ export async function storeRecordedGpx(
   const { data } = await api.post(`/videos/${id}/gps/gpx`, {
     gpxXml,
     timeZone,
+    recordingStartTime,
   });
+  return data;
+}
+
+export async function deleteRecordedGps(id: string): Promise<{
+  success: boolean;
+  message: string;
+  pair: VideoPair;
+}> {
+  const { data } = await api.delete(`/videos/${id}/gps`);
+  return data;
+}
+
+export async function useEmbeddedGps(id: string): Promise<{
+  success: boolean;
+  message: string;
+  hasGps: boolean;
+  pair: VideoPair;
+}> {
+  const { data } = await api.delete(`/videos/${id}/gps/gpx`);
   return data;
 }
 

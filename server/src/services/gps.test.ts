@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   GPS_EXTRACTION_VERSION,
+  deleteRecordedGpxTrack,
+  disableRecordedGps,
+  enableRecordedGps,
+  hasRecordedGpxTrack,
   hasCurrentNoGpsResult,
+  isRecordedGpsDisabled,
   isGpsCacheUsable,
+  saveRecordedGpxTrack,
 } from "./gps.js";
 
 const point = { tsSec: 0, lat: 47.48, lon: 19.05 };
@@ -41,4 +50,32 @@ test("retries no-GPS flags created by an older extractor", () => {
     }),
     false,
   );
+});
+
+test("durably disables GPS while deleting a stored GPX override", () => {
+  const mediaDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "dashcam-gps-delete-"),
+  );
+  try {
+    const storedPath = saveRecordedGpxTrack(
+      mediaDir,
+      "20260509_185356",
+      "<gpx />",
+    );
+    assert.equal(fs.existsSync(storedPath), true);
+    assert.equal(hasRecordedGpxTrack(mediaDir, "20260509_185356"), true);
+
+    deleteRecordedGpxTrack(mediaDir, "20260509_185356");
+    assert.equal(hasRecordedGpxTrack(mediaDir, "20260509_185356"), false);
+    saveRecordedGpxTrack(mediaDir, "20260509_185356", "<gpx />");
+
+    disableRecordedGps(mediaDir, "20260509_185356");
+    assert.equal(fs.existsSync(storedPath), false);
+    assert.equal(isRecordedGpsDisabled(mediaDir, "20260509_185356"), true);
+
+    enableRecordedGps(mediaDir, "20260509_185356");
+    assert.equal(isRecordedGpsDisabled(mediaDir, "20260509_185356"), false);
+  } finally {
+    fs.rmSync(mediaDir, { recursive: true, force: true });
+  }
 });

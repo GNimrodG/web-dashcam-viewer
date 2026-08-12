@@ -6,8 +6,14 @@ import chokidar from "chokidar";
 import { ffprobe, FFProbeResult, parseISO6709 } from "./ffprobe.js";
 import {
   GPS_EXTRACTION_VERSION,
+  deleteRecordedGpxTrack,
+  deleteGpsCache,
+  disableRecordedGps,
+  enableRecordedGps,
   extractTimedGpsTrack,
+  hasRecordedGpxTrack,
   hasCurrentNoGpsResult,
+  isRecordedGpsDisabled,
   loadRecordedGpxTrack,
 } from "./gps.js";
 import { reverseGeocodeDetailed } from "./geocode.js";
@@ -19,7 +25,11 @@ import {
   parseDashcamFilenameTimeIso,
   parseDashcamPairIdTimeIso,
 } from "../utils/dashcam-time.js";
-import { getRecordingTimeZone, getRecordingTimeZones } from "../db/database.js";
+import {
+  getRecordingStartTimes,
+  getRecordingTimeZone,
+  getRecordingTimeZones,
+} from "../db/database.js";
 import {
   canonicalMediaPath,
   compareMediaPathPriority,
@@ -296,11 +306,33 @@ export async function buildIndex(mediaDir: string) {
   await Promise.all(Array.from({ length: concurrency }, worker));
 
   const timeZoneOverrides = getRecordingTimeZones();
+  const startTimeOverrides = getRecordingStartTimes();
   for (const pair of INDEX.values()) {
+    const startTimeOverride = startTimeOverrides.get(pair.id);
     const timeZone = timeZoneOverrides.get(pair.id);
-    if (!timeZone) continue;
-    pair.startTime =
-      parsePairIdStartTimeIso(pair.id, timeZone) || pair.startTime;
+    if (startTimeOverride) {
+      pair.startTime = startTimeOverride;
+      pair.recordingStartTimeOverride = startTimeOverride;
+    } else {
+      pair.recordingStartTimeOverride = undefined;
+    }
+    if (!startTimeOverride && timeZone) {
+      pair.startTime =
+        parsePairIdStartTimeIso(pair.id, timeZone) || pair.startTime;
+    }
+
+    const gpsDisabled = isRecordedGpsDisabled(mediaDir, pair.id);
+    pair.gpsDisabled = gpsDisabled;
+    pair.hasExternalGps = hasRecordedGpxTrack(mediaDir, pair.id);
+    if (gpsDisabled) {
+      resetGpsDerivedLocationForPair(pair.id);
+      for (const channel of Object.values(pair.channels)) {
+        if (!channel) continue;
+        channel.location = undefined;
+        channel.noGps = true;
+        channel.gpsExtractionVersion = GPS_EXTRACTION_VERSION;
+      }
+    }
   }
 
   scheduleSave();
@@ -582,6 +614,26 @@ export function updatePairTimeZone(
   return pair;
 }
 
+export function updatePairStartTime(
+  id: string,
+  startTime: string,
+): VideoPair | undefined {
+  const pair = INDEX.get(id);
+  if (!pair || !Number.isFinite(Date.parse(startTime))) return undefined;
+  pair.startTime = new Date(startTime).toISOString();
+  pair.recordingStartTimeOverride = pair.startTime;
+  scheduleSave();
+  return pair;
+}
+
+export function clearPairStartTimeOverride(id: string): VideoPair | undefined {
+  const pair = INDEX.get(id);
+  if (!pair) return undefined;
+  pair.recordingStartTimeOverride = undefined;
+  scheduleSave();
+  return pair;
+}
+
 const gpsTrackPromises: Map<
   string,
   Promise<{ front?: GpsPoint[]; rear?: GpsPoint[] }>
@@ -609,6 +661,9 @@ export function registerStoredGpsForPair(id: string): void {
   const pair = INDEX.get(id);
   if (!pair) return;
 
+  enableRecordedGps(MEDIA_DIR, id);
+  pair.gpsDisabled = false;
+  pair.hasExternalGps = true;
   resetGpsDerivedLocationForPair(id);
   invalidateGpsTrackForPair(id);
   for (const channel of Object.values(pair.channels)) {
@@ -618,6 +673,66 @@ export function registerStoredGpsForPair(id: string): void {
     }
   }
   scheduleSave();
+}
+
+export async function deleteGpsForPair(
+  id: string,
+): Promise<VideoPair | undefined> {
+  const pair = INDEX.get(id);
+  if (!pair) return undefined;
+
+  disableRecordedGps(MEDIA_DIR, id);
+  const activeExtraction = gpsTrackPromises.get(id);
+  if (activeExtraction) {
+    await activeExtraction.catch(() => undefined);
+  }
+
+  invalidateGpsTrackForPair(id);
+  resetGpsDerivedLocationForPair(id);
+  pair.gpsDisabled = true;
+  pair.hasExternalGps = false;
+  for (const channel of Object.values(pair.channels)) {
+    if (!channel) continue;
+    deleteGpsCache(channel.path);
+    channel.location = undefined;
+    channel.noGps = true;
+    channel.gpsExtractionVersion = GPS_EXTRACTION_VERSION;
+  }
+  await saveCache();
+  return pair;
+}
+
+export async function restoreEmbeddedGpsForPair(id: string): Promise<
+  | {
+      pair: VideoPair;
+      data: { front?: GpsPoint[]; rear?: GpsPoint[] };
+    }
+  | undefined
+> {
+  const pair = INDEX.get(id);
+  if (!pair) return undefined;
+
+  deleteRecordedGpxTrack(MEDIA_DIR, id);
+  enableRecordedGps(MEDIA_DIR, id);
+  const activeExtraction = gpsTrackPromises.get(id);
+  if (activeExtraction) {
+    await activeExtraction.catch(() => undefined);
+  }
+
+  invalidateGpsTrackForPair(id);
+  resetGpsDerivedLocationForPair(id);
+  pair.gpsDisabled = false;
+  pair.hasExternalGps = false;
+  for (const channel of Object.values(pair.channels)) {
+    if (!channel) continue;
+    deleteGpsCache(channel.path);
+    channel.noGps = undefined;
+    channel.gpsExtractionVersion = undefined;
+  }
+  await saveCache();
+
+  const data = await getGpsTrackForPair(id);
+  return { pair, data };
 }
 
 const GPS_CONCURRENT_LIMIT = Number(process.env.GPS_CONCURRENT_LIMIT) || 5;
@@ -717,6 +832,19 @@ function startGpsExtraction(
       logger.info("Extracting GPS track for pair: " + id);
       const pair = getVideoPairById(id);
       if (!pair) throw new Error("Not found");
+
+      if (isRecordedGpsDisabled(MEDIA_DIR, id)) {
+        pair.gpsDisabled = true;
+        resetGpsDerivedLocationForPair(id);
+        for (const channel of Object.values(pair.channels)) {
+          if (!channel) continue;
+          channel.location = undefined;
+          channel.noGps = true;
+          channel.gpsExtractionVersion = GPS_EXTRACTION_VERSION;
+        }
+        await saveCache();
+        return {};
+      }
 
       const recorded = loadRecordedGpxTrack(
         MEDIA_DIR,

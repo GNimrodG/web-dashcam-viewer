@@ -94,6 +94,7 @@ async function buildCatalog(
 ): Promise<GpsMapCatalog> {
   const candidates = pairs.filter(
     (pair) =>
+      !pair.gpsDisabled &&
       !(
         hasCurrentNoGpsResult(pair.channels.front) &&
         hasCurrentNoGpsResult(pair.channels.rear)

@@ -69,3 +69,24 @@ test("GPS map signatures change when the extractor version changes", () => {
   pair.channels.front!.gpsExtractionVersion = 2;
   assert.notEqual(buildGpsMapSignature([pair]), legacySignature);
 });
+
+test("GPS map signatures change when GPS is disabled", () => {
+  const pair: VideoPair = {
+    id: "20260509_185356",
+    channels: {},
+  };
+  const enabledSignature = buildGpsMapSignature([pair]);
+  pair.gpsDisabled = true;
+  assert.notEqual(buildGpsMapSignature([pair]), enabledSignature);
+});
+
+test("GPS map signatures change when an external GPX is removed", () => {
+  const pair: VideoPair = {
+    id: "20260509_185356",
+    channels: {},
+    hasExternalGps: true,
+  };
+  const externalSignature = buildGpsMapSignature([pair]);
+  pair.hasExternalGps = false;
+  assert.notEqual(buildGpsMapSignature([pair]), externalSignature);
+});

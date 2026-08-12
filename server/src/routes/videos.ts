@@ -10,6 +10,10 @@ import {
   updatePairLocation,
   getAllUniqueLocations,
   registerStoredGpsForPair,
+  deleteGpsForPair,
+  restoreEmbeddedGpsForPair,
+  clearPairStartTimeOverride,
+  updatePairStartTime,
   updatePairTimeZone,
 } from "../services/indexer.js";
 import { createClip } from "../services/clipper.js";
@@ -39,6 +43,8 @@ import {
   getVideoPois,
   getRecordingTimeZone,
   getRecordingTimeZones,
+  deleteRecordingStartTime,
+  setRecordingStartTime,
   setRecordingTimeZone,
 } from "../db/database.js";
 import { randomUUID } from "node:crypto";
@@ -459,6 +465,50 @@ router.get("/:id/gps", async (req, res) => {
   }
 });
 
+router.delete("/:id/gps", async (req, res) => {
+  try {
+    const pair = await deleteGpsForPair(req.params.id);
+    if (!pair) {
+      return res.status(404).json({ error: "Video pair not found" });
+    }
+
+    await invalidateGpsMapCatalog(config.MEDIA_DIR);
+    res.json({
+      success: true,
+      message: "GPS data deleted",
+      pair: serializePair(pair),
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      error: error?.message || "Failed to delete GPS data",
+    });
+  }
+});
+
+router.delete("/:id/gps/gpx", async (req, res) => {
+  try {
+    const result = await restoreEmbeddedGpsForPair(req.params.id);
+    if (!result) {
+      return res.status(404).json({ error: "Video pair not found" });
+    }
+
+    await invalidateGpsMapCatalog(config.MEDIA_DIR);
+    const hasGps = !!(result.data.front?.length || result.data.rear?.length);
+    res.json({
+      success: true,
+      message: hasGps
+        ? "External GPX removed; using embedded GPS data"
+        : "External GPX removed; no embedded GPS data was found",
+      hasGps,
+      pair: serializePair(result.pair),
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      error: error?.message || "Failed to restore embedded GPS data",
+    });
+  }
+});
+
 // Download GPS track as GPX
 router.get("/:id/gps/gpx", async (req, res) => {
   try {
@@ -503,6 +553,7 @@ router.post("/:id/gps/gpx", async (req, res) => {
 
     const gpxXml = getAny(req.body, "gpxXml");
     const requestedTimeZone = getAny(req.body, "timeZone");
+    const requestedRecordingStartTime = getAny(req.body, "recordingStartTime");
     if (typeof gpxXml !== "string" || !gpxXml.trim()) {
       return res.status(400).json({ error: "GPX XML is required" });
     }
@@ -518,7 +569,21 @@ router.post("/:id/gps/gpx", async (req, res) => {
       return res.status(400).json({ error: "Video duration is unavailable" });
     }
 
-    const startTime = parseDashcamPairIdTimeIso(pair.id, requestedTimeZone);
+    let startTime: string | undefined;
+    const usesExplicitStartTime = requestedRecordingStartTime != null;
+    if (usesExplicitStartTime) {
+      if (
+        typeof requestedRecordingStartTime !== "string" ||
+        !Number.isFinite(Date.parse(requestedRecordingStartTime))
+      ) {
+        return res
+          .status(400)
+          .json({ error: "A valid recording start time is required" });
+      }
+      startTime = new Date(requestedRecordingStartTime).toISOString();
+    } else {
+      startTime = parseDashcamPairIdTimeIso(pair.id, requestedTimeZone);
+    }
     if (!startTime) {
       return res.status(400).json({
         error: "Recording filename does not contain a usable date and time",
@@ -546,16 +611,26 @@ router.post("/:id/gps/gpx", async (req, res) => {
     const storedGpx = buildStoredGpxDocument(
       cropped,
       `${pair.id} GPS`,
-      `Auto-cropped using dashcam time zone ${requestedTimeZone}`,
+      usesExplicitStartTime
+        ? `Auto-cropped using explicit recording start ${startTime}`
+        : `Auto-cropped using dashcam time zone ${requestedTimeZone}`,
     );
 
     const filePath = saveRecordedGpxTrack(config.MEDIA_DIR, pair.id, storedGpx);
     setRecordingTimeZone(pair.id, requestedTimeZone);
-    const updatedPair = updatePairTimeZone(pair.id, requestedTimeZone);
+    let updatedPair;
+    if (usesExplicitStartTime) {
+      setRecordingStartTime(pair.id, startTime);
+      updatedPair = updatePairStartTime(pair.id, startTime);
+    } else {
+      deleteRecordingStartTime(pair.id);
+      clearPairStartTimeOverride(pair.id);
+      updatedPair = updatePairTimeZone(pair.id, requestedTimeZone);
+    }
     if (!updatedPair) {
       return res
         .status(400)
-        .json({ error: "Unable to apply recording time zone" });
+        .json({ error: "Unable to apply recording start time" });
     }
     registerStoredGpsForPair(pair.id);
     await invalidateGpsMapCatalog(config.MEDIA_DIR);

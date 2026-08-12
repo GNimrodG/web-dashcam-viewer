@@ -6,14 +6,18 @@ import test from "node:test";
 import {
   closeDatabase,
   createVideoPoi,
+  deleteRecordingStartTime,
   deleteVideoPoi,
   getVideoPoiCount,
   getVideoPoiCounts,
   getVideoPois,
   getRecordingTimeZone,
   getRecordingTimeZones,
+  getRecordingStartTime,
+  getRecordingStartTimes,
   initDatabase,
   setRecordingTimeZone,
+  setRecordingStartTime,
 } from "./database";
 
 test("persists, orders, and deletes video POIs within their recording", () => {
@@ -61,9 +65,28 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       ["recording-b", "Etc/GMT-2"],
     ]);
 
+    assert.equal(getRecordingStartTime("recording-a"), undefined);
+    setRecordingStartTime("recording-a", "2026-05-09T16:53:56.000Z");
+    setRecordingStartTime("recording-b", "2026-05-09T17:00:00.000Z");
+    setRecordingStartTime("recording-a", "2026-05-09T16:54:00.000Z");
+    assert.equal(
+      getRecordingStartTime("recording-a"),
+      "2026-05-09T16:54:00.000Z",
+    );
+    assert.deepEqual([...getRecordingStartTimes()].sort(), [
+      ["recording-a", "2026-05-09T16:54:00.000Z"],
+      ["recording-b", "2026-05-09T17:00:00.000Z"],
+    ]);
+    deleteRecordingStartTime("recording-b");
+    assert.equal(getRecordingStartTime("recording-b"), undefined);
+
     closeDatabase();
     initDatabase(mediaDir);
     assert.equal(getRecordingTimeZone("recording-a"), "Europe/Budapest");
+    assert.equal(
+      getRecordingStartTime("recording-a"),
+      "2026-05-09T16:54:00.000Z",
+    );
   } finally {
     closeDatabase();
     rmSync(mediaDir, { recursive: true, force: true });

@@ -8,6 +8,8 @@ export function buildGpsMapSignature(pairs: readonly VideoPair[]): string {
     id: pair.id,
     startTime: pair.startTime,
     durationSec: pair.durationSec,
+    gpsDisabled: pair.gpsDisabled,
+    hasExternalGps: pair.hasExternalGps,
     startLocationName: pair.startLocationName,
     endLocationName: pair.endLocationName,
     channels: Object.entries(pair.channels)

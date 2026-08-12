@@ -144,7 +144,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 #### Core Settings
 
 - `MEDIA_DIR` - **Required.** Absolute path to dashcam video folder
-- `DASHCAM_TIME_ZONE` - Default IANA timezone used by timestamps in dashcam filenames (default: `Etc/GMT-2`, fixed UTC+2). Individual GPX uploads can select and persist a different timezone for that recording.
+- `DASHCAM_TIME_ZONE` - Default IANA timezone used by timestamps in dashcam filenames (default: `Etc/GMT-2`, fixed UTC+2). Individual GPX uploads can select a different timezone or persist an explicit browser-local recording start time.
 - `PORT` - Server port (default: 3000)
 - `NODE_ENV` - Environment mode (`development` or `production`)
 - `SERVE_WEB` - Serve frontend build from server (default: `true`)
@@ -172,6 +172,8 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `GET /api/videos/:id/source/:channel` - Stream video (`front` or `rear`)
 - `GET /api/videos/:id/gps` - Get GPS track data
 - `GET /api/videos/:id/gps/gpx` - Download GPS track as GPX
+- `DELETE /api/videos/:id/gps` - Delete and suppress incorrect GPS data
+- `DELETE /api/videos/:id/gps/gpx` - Remove an external GPX and restore embedded GPS
 - `POST /api/videos/gps/gpx/bulk` - Apply one GPX file to every overlapping recording
 - `GET /api/videos/gps-queue-status` - Real-time GPS queue status (SSE)
 - `GET /api/videos/locations` - Get unique cities/countries for autocomplete

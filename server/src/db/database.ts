@@ -73,6 +73,13 @@ export function initDatabase(mediaDir: string) {
     )
   `);
 
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS recording_start_times (
+      video_id TEXT PRIMARY KEY,
+      start_time TEXT NOT NULL
+    )
+  `);
+
     // Clean up expired tokens on startup
     cleanExpiredTokens();
 
@@ -230,6 +237,44 @@ export function getRecordingTimeZones(): Map<string, string> {
     )
     .all() as Array<{ videoId: string; timeZone: string }>;
   return new Map(rows.map((row) => [row.videoId, row.timeZone]));
+}
+
+export function setRecordingStartTime(
+  videoId: string,
+  startTime: string,
+): void {
+  db.prepare(
+    `INSERT INTO recording_start_times (video_id, start_time)
+     VALUES (?, ?)
+     ON CONFLICT(video_id) DO UPDATE SET start_time = excluded.start_time`,
+  ).run(videoId, startTime);
+}
+
+export function deleteRecordingStartTime(videoId: string): void {
+  db.prepare("DELETE FROM recording_start_times WHERE video_id = ?").run(
+    videoId,
+  );
+}
+
+export function getRecordingStartTime(videoId: string): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT start_time as startTime
+       FROM recording_start_times
+       WHERE video_id = ?`,
+    )
+    .get(videoId) as { startTime: string } | undefined;
+  return row?.startTime;
+}
+
+export function getRecordingStartTimes(): Map<string, string> {
+  const rows = db
+    .prepare(
+      `SELECT video_id as videoId, start_time as startTime
+       FROM recording_start_times`,
+    )
+    .all() as Array<{ videoId: string; startTime: string }>;
+  return new Map(rows.map((row) => [row.videoId, row.startTime]));
 }
 
 export function deleteVideoPoi(videoId: string, poiId: string): boolean {

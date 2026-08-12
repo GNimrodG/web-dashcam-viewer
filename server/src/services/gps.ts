@@ -52,6 +52,40 @@ function getRecordedGpxPath(mediaDir: string, pairId: string) {
   return path.join(mediaDir, "recorded-gpx", `${pairId}.gpx`);
 }
 
+function getGpsDisabledPath(mediaDir: string, pairId: string) {
+  return path.join(mediaDir, "recorded-gpx", `${pairId}.gps-disabled`);
+}
+
+export function hasRecordedGpxTrack(mediaDir: string, pairId: string): boolean {
+  return fs.existsSync(getRecordedGpxPath(mediaDir, pairId));
+}
+
+export function deleteRecordedGpxTrack(mediaDir: string, pairId: string): void {
+  fs.rmSync(getRecordedGpxPath(mediaDir, pairId), { force: true });
+}
+
+export function isRecordedGpsDisabled(
+  mediaDir: string,
+  pairId: string,
+): boolean {
+  return fs.existsSync(getGpsDisabledPath(mediaDir, pairId));
+}
+
+export function disableRecordedGps(mediaDir: string, pairId: string): void {
+  const dir = path.join(mediaDir, "recorded-gpx");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(getGpsDisabledPath(mediaDir, pairId), "disabled\n", "utf8");
+  deleteRecordedGpxTrack(mediaDir, pairId);
+}
+
+export function enableRecordedGps(mediaDir: string, pairId: string): void {
+  fs.rmSync(getGpsDisabledPath(mediaDir, pairId), { force: true });
+}
+
+export function deleteGpsCache(filePath: string): void {
+  fs.rmSync(getGpsCachePath(filePath), { force: true });
+}
+
 export function saveRecordedGpxTrack(
   mediaDir: string,
   pairId: string,
