@@ -10,6 +10,7 @@ import {
   updatePairLocation,
   getAllUniqueLocations,
   registerStoredGpsForPair,
+  updatePairTimeZone,
 } from "../services/indexer.js";
 import { createClip } from "../services/clipper.js";
 import { generateGPX } from "../services/gpx.js";
@@ -35,8 +36,13 @@ import {
   getVideoPoiCount,
   getVideoPoiCounts,
   getVideoPois,
+  getRecordingTimeZone,
+  getRecordingTimeZones,
+  setRecordingTimeZone,
 } from "../db/database.js";
 import { randomUUID } from "node:crypto";
+import { IANAZone } from "luxon";
+import { parseDashcamPairIdTimeIso } from "../utils/dashcam-time.js";
 
 const config = loadConfig();
 
@@ -48,15 +54,27 @@ import type { Channel } from "../types.js";
 
 const router = Router();
 
+function serializePair(
+  pair: NonNullable<ReturnType<typeof getVideoPairById>>,
+  poiCount = getVideoPoiCount(pair.id),
+  timeZone = getRecordingTimeZone(pair.id) || config.DASHCAM_TIME_ZONE,
+) {
+  return { ...pair, poiCount, dashcamTimeZone: timeZone };
+}
+
 // List pairs
 router.get("/", (_req, res) => {
   const pairs = getVideoPairs();
   const poiCounts = getVideoPoiCounts();
+  const timeZones = getRecordingTimeZones();
   res.json(
-    pairs.map((pair) => ({
-      ...pair,
-      poiCount: poiCounts.get(pair.id) ?? 0,
-    })),
+    pairs.map((pair) =>
+      serializePair(
+        pair,
+        poiCounts.get(pair.id) ?? 0,
+        timeZones.get(pair.id) || config.DASHCAM_TIME_ZONE,
+      ),
+    ),
   );
 });
 
@@ -83,11 +101,7 @@ router.patch("/:id/location", (req, res) => {
   }
 
   const updatedPair = getVideoPairById(id);
-  res.json(
-    updatedPair
-      ? { ...updatedPair, poiCount: getVideoPoiCount(updatedPair.id) }
-      : updatedPair,
-  );
+  res.json(updatedPair ? serializePair(updatedPair) : updatedPair);
 });
 
 // Get GPS extraction queue status (Server-Sent Events)
@@ -378,7 +392,7 @@ router.delete("/clips/:filename", (req, res) => {
 router.get("/:id", (req, res) => {
   const pair = getVideoPairById(req.params.id);
   if (!pair) return res.status(404).json({ error: "Not found" });
-  res.json({ ...pair, poiCount: getVideoPoiCount(pair.id) });
+  res.json(serializePair(pair));
 });
 
 // Stream a specific channel
@@ -450,11 +464,61 @@ router.post("/:id/gps/gpx", async (req, res) => {
     }
 
     const gpxXml = getAny(req.body, "gpxXml");
+    const requestedTimeZone = getAny(req.body, "timeZone");
     if (typeof gpxXml !== "string" || !gpxXml.trim()) {
       return res.status(400).json({ error: "GPX XML is required" });
     }
+    if (
+      typeof requestedTimeZone !== "string" ||
+      !IANAZone.isValidZone(requestedTimeZone)
+    ) {
+      return res
+        .status(400)
+        .json({ error: "A valid IANA time zone is required" });
+    }
+    if (!pair.durationSec || pair.durationSec <= 0) {
+      return res.status(400).json({ error: "Video duration is unavailable" });
+    }
 
-    const filePath = saveRecordedGpxTrack(config.MEDIA_DIR, pair.id, gpxXml);
+    const startTime = parseDashcamPairIdTimeIso(pair.id, requestedTimeZone);
+    if (!startTime) {
+      return res.status(400).json({
+        error: "Recording filename does not contain a usable date and time",
+      });
+    }
+
+    let points;
+    try {
+      points = parseAbsoluteGpxPoints(gpxXml);
+    } catch (error: any) {
+      return res.status(400).json({
+        error: error?.message || "Invalid GPX file",
+      });
+    }
+
+    const startMs = Date.parse(startTime);
+    const endMs = startMs + pair.durationSec * 1000;
+    const cropped = cropAbsoluteGpxPoints(points, startMs, endMs);
+    if (!cropped.length) {
+      return res.status(400).json({
+        error: "No GPS points fell within video window.",
+      });
+    }
+
+    const storedGpx = buildStoredGpxDocument(
+      cropped,
+      `${pair.id} GPS`,
+      `Auto-cropped using dashcam time zone ${requestedTimeZone}`,
+    );
+
+    const filePath = saveRecordedGpxTrack(config.MEDIA_DIR, pair.id, storedGpx);
+    setRecordingTimeZone(pair.id, requestedTimeZone);
+    const updatedPair = updatePairTimeZone(pair.id, requestedTimeZone);
+    if (!updatedPair) {
+      return res
+        .status(400)
+        .json({ error: "Unable to apply recording time zone" });
+    }
     registerStoredGpsForPair(pair.id);
     await invalidateGpsMapCatalog(config.MEDIA_DIR);
     await getGpsTrackForPair(pair.id);
@@ -462,6 +526,7 @@ router.post("/:id/gps/gpx", async (req, res) => {
       success: true,
       message: "GPX stored for recording",
       filePath,
+      pair: serializePair(updatedPair),
     });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || "Failed to store GPX" });

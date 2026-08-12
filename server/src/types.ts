@@ -31,6 +31,7 @@ export interface VideoPair {
   endState?: string;
   endCity?: string;
   poiCount?: number;
+  dashcamTimeZone?: string;
 }
 
 export interface GpsPoint {

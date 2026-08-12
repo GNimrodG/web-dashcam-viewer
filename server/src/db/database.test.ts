@@ -10,7 +10,10 @@ import {
   getVideoPoiCount,
   getVideoPoiCounts,
   getVideoPois,
+  getRecordingTimeZone,
+  getRecordingTimeZones,
   initDatabase,
+  setRecordingTimeZone,
 } from "./database";
 
 test("persists, orders, and deletes video POIs within their recording", () => {
@@ -47,6 +50,20 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       ["later"],
     );
     assert.equal(getVideoPoiCount("recording-a"), 1);
+
+    assert.equal(getRecordingTimeZone("recording-a"), undefined);
+    setRecordingTimeZone("recording-a", "Europe/Berlin");
+    setRecordingTimeZone("recording-b", "Etc/GMT-2");
+    setRecordingTimeZone("recording-a", "Europe/Budapest");
+    assert.equal(getRecordingTimeZone("recording-a"), "Europe/Budapest");
+    assert.deepEqual([...getRecordingTimeZones()].sort(), [
+      ["recording-a", "Europe/Budapest"],
+      ["recording-b", "Etc/GMT-2"],
+    ]);
+
+    closeDatabase();
+    initDatabase(mediaDir);
+    assert.equal(getRecordingTimeZone("recording-a"), "Europe/Budapest");
   } finally {
     closeDatabase();
     rmSync(mediaDir, { recursive: true, force: true });

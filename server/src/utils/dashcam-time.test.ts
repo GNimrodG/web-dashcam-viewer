@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   getDashcamTimeZone,
   parseDashcamFilenameTimeIso,
+  parseDashcamPairIdTimeIso,
 } from "./dashcam-time.js";
 
 test("converts winter dashcam filename time using the configured zone", () => {
@@ -32,6 +33,17 @@ test("supports a dashcam clock fixed at UTC+2 before DST", () => {
       "Etc/GMT-2",
     ),
     "2026-03-26T14:09:11Z",
+  );
+});
+
+test("converts a recording pair id using a per-recording time zone", () => {
+  assert.equal(
+    parseDashcamPairIdTimeIso("20260326_160911", "Europe/Berlin"),
+    "2026-03-26T15:09:11Z",
+  );
+  assert.equal(
+    parseDashcamPairIdTimeIso("not-a-recording", "Europe/Berlin"),
+    undefined,
   );
 });
 

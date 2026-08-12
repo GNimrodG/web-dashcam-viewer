@@ -1,6 +1,7 @@
 import "dotenv/config";
 import path from "node:path";
 import fs from "node:fs";
+import { getDashcamTimeZone } from "./utils/dashcam-time.js";
 
 export function loadConfig() {
   const MEDIA_DIR = process.env.MEDIA_DIR
@@ -22,8 +23,7 @@ export function loadConfig() {
   const SESSION_SECRET =
     process.env.SESSION_SECRET || "change-me-in-production";
   const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
-  const DASHCAM_TIME_ZONE =
-    process.env.DASHCAM_TIME_ZONE || "Etc/GMT-2";
+  const DASHCAM_TIME_ZONE = getDashcamTimeZone();
 
   if (AUTH_ENABLED) {
     if (

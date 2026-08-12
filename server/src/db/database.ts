@@ -66,6 +66,13 @@ export function initDatabase(mediaDir: string) {
     ON video_pois(video_id, time_sec)
   `);
 
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS recording_time_zones (
+      video_id TEXT PRIMARY KEY,
+      time_zone TEXT NOT NULL
+    )
+  `);
+
     // Clean up expired tokens on startup
     cleanExpiredTokens();
 
@@ -194,6 +201,35 @@ export function getVideoPoiCounts(): Map<string, number> {
     )
     .all() as Array<{ videoId: string; count: number }>;
   return new Map(rows.map((row) => [row.videoId, row.count]));
+}
+
+export function setRecordingTimeZone(videoId: string, timeZone: string): void {
+  db.prepare(
+    `INSERT INTO recording_time_zones (video_id, time_zone)
+     VALUES (?, ?)
+     ON CONFLICT(video_id) DO UPDATE SET time_zone = excluded.time_zone`,
+  ).run(videoId, timeZone);
+}
+
+export function getRecordingTimeZone(videoId: string): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT time_zone as timeZone
+       FROM recording_time_zones
+       WHERE video_id = ?`,
+    )
+    .get(videoId) as { timeZone: string } | undefined;
+  return row?.timeZone;
+}
+
+export function getRecordingTimeZones(): Map<string, string> {
+  const rows = db
+    .prepare(
+      `SELECT video_id as videoId, time_zone as timeZone
+       FROM recording_time_zones`,
+    )
+    .all() as Array<{ videoId: string; timeZone: string }>;
+  return new Map(rows.map((row) => [row.videoId, row.timeZone]));
 }
 
 export function deleteVideoPoi(videoId: string, poiId: string): boolean {

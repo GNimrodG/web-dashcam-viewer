@@ -12,7 +12,9 @@ import { parseByteRange } from "../utils/http.js";
 import {
   getDashcamTimeZone,
   parseDashcamFilenameTimeIso,
+  parseDashcamPairIdTimeIso,
 } from "../utils/dashcam-time.js";
+import { getRecordingTimeZone, getRecordingTimeZones } from "../db/database.js";
 import {
   canonicalMediaPath,
   compareMediaPathPriority,
@@ -64,9 +66,11 @@ function parseFilenameStartTimeIso(parsed: {
   return parseDashcamFilenameTimeIso(parsed, DASHCAM_TIME_ZONE);
 }
 
-function parsePairIdStartTimeIso(pairId: string): string | undefined {
-  const [date, time] = pairId.split("_");
-  return parseFilenameStartTimeIso({ date, time });
+function parsePairIdStartTimeIso(
+  pairId: string,
+  timeZone = DASHCAM_TIME_ZONE,
+): string | undefined {
+  return parseDashcamPairIdTimeIso(pairId, timeZone);
 }
 
 async function loadCache(mediaDir: string) {
@@ -192,11 +196,13 @@ export async function buildIndex(mediaDir: string) {
           delete pair.channels[chName];
         }
       }
-      pair.startTime =
-        pair.channels.front?.createdAt ||
-        pair.channels.rear?.createdAt ||
-        parsePairIdStartTimeIso(pair.id) ||
-        pair.startTime;
+      const timeZoneOverride = getRecordingTimeZone(pair.id);
+      pair.startTime = timeZoneOverride
+        ? parsePairIdStartTimeIso(pair.id, timeZoneOverride) || pair.startTime
+        : pair.channels.front?.createdAt ||
+          pair.channels.rear?.createdAt ||
+          parsePairIdStartTimeIso(pair.id) ||
+          pair.startTime;
       if (!pair.channels.front && !pair.channels.rear) {
         toDelete.push(pair.id);
       }
@@ -283,6 +289,14 @@ export async function buildIndex(mediaDir: string) {
   }
 
   await Promise.all(Array.from({ length: concurrency }, worker));
+
+  const timeZoneOverrides = getRecordingTimeZones();
+  for (const pair of INDEX.values()) {
+    const timeZone = timeZoneOverrides.get(pair.id);
+    if (!timeZone) continue;
+    pair.startTime =
+      parsePairIdStartTimeIso(pair.id, timeZone) || pair.startTime;
+  }
 
   scheduleSave();
 }
@@ -448,7 +462,12 @@ async function upsertFile(filePath: string) {
     } else {
       pair.channels = { ...pair.channels };
     }
-    pair.startTime = pair.startTime || vf.createdAt;
+    const timeZoneOverride = getRecordingTimeZone(pair.id);
+    pair.startTime = timeZoneOverride
+      ? parsePairIdStartTimeIso(pair.id, timeZoneOverride) ||
+        pair.startTime ||
+        vf.createdAt
+      : pair.startTime || vf.createdAt;
     pair.durationSec = Math.max(pair.durationSec || 0, vf.durationSec || 0);
     INDEX.set(pairKey, pair);
     scheduleSave();
@@ -543,6 +562,19 @@ export function getVideoPairs(): VideoPair[] {
 
 export function getVideoPairById(id: string): VideoPair | undefined {
   return INDEX.get(id);
+}
+
+export function updatePairTimeZone(
+  id: string,
+  timeZone: string,
+): VideoPair | undefined {
+  const pair = INDEX.get(id);
+  if (!pair) return undefined;
+  const startTime = parsePairIdStartTimeIso(id, timeZone);
+  if (!startTime) return undefined;
+  pair.startTime = startTime;
+  scheduleSave();
+  return pair;
 }
 
 const gpsTrackPromises: Map<

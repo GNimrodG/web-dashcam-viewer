@@ -25,12 +25,14 @@ type Props = {
   currentTimeSec?: number;
   onSeek?: (timeSec: number) => void;
   pois?: readonly VideoPoi[];
+  onPairUpdated?: (pair: VideoPair) => void;
 };
 export default function MapView({
   pair,
   currentTimeSec,
   onSeek,
   pois = [],
+  onPairUpdated,
 }: Readonly<Props>) {
   const canAutoCrop =
     !!pair?.startTime && Number.isFinite(pair?.durationSec ?? Number.NaN);
@@ -311,7 +313,11 @@ export default function MapView({
                   videoId={pair.id}
                   startTime={pair.startTime || null}
                   durationSec={pair.durationSec || null}
-                  onStored={refresh}
+                  dashcamTimeZone={pair.dashcamTimeZone || "UTC"}
+                  onStored={(updatedPair) => {
+                    refresh();
+                    onPairUpdated?.(updatedPair);
+                  }}
                 />
               ) : null}
             </Box>
@@ -335,7 +341,11 @@ export default function MapView({
               videoId={pair.id}
               startTime={pair.startTime || null}
               durationSec={pair.durationSec || null}
-              onStored={refresh}
+              dashcamTimeZone={pair.dashcamTimeZone || "UTC"}
+              onStored={(updatedPair) => {
+                refresh();
+                onPairUpdated?.(updatedPair);
+              }}
               overwrite
               compact
             />

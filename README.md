@@ -144,7 +144,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 #### Core Settings
 
 - `MEDIA_DIR` - **Required.** Absolute path to dashcam video folder
-- `DASHCAM_TIME_ZONE` - IANA timezone used by timestamps in dashcam filenames (default: `Etc/GMT-2`, fixed UTC+2)
+- `DASHCAM_TIME_ZONE` - Default IANA timezone used by timestamps in dashcam filenames (default: `Etc/GMT-2`, fixed UTC+2). Individual GPX uploads can select and persist a different timezone for that recording.
 - `PORT` - Server port (default: 3000)
 - `NODE_ENV` - Environment mode (`development` or `production`)
 - `SERVE_WEB` - Serve frontend build from server (default: `true`)

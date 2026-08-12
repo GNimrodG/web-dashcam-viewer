@@ -1,21 +1,20 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import Box from "@mui/joy/Box";
 import Button from "@mui/joy/Button";
 import Typography from "@mui/joy/Typography";
 import Alert from "@mui/joy/Alert";
+import Autocomplete from "@mui/joy/Autocomplete";
+import FormControl from "@mui/joy/FormControl";
+import FormLabel from "@mui/joy/FormLabel";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
-import {
-  buildGpxDocument,
-  cropGpxTrack,
-  parseGpxTrackPoints,
-} from "../utils/gpx";
-import { storeRecordedGpx } from "../api";
+import { storeRecordedGpx, type VideoPair } from "../api";
 
 type Props = {
   videoId: string;
   startTime?: string | null;
   durationSec?: number | null;
-  onStored?: () => void;
+  dashcamTimeZone: string;
+  onStored?: (updatedPair: VideoPair) => void;
   overwrite?: boolean;
   compact?: boolean;
 };
@@ -24,6 +23,7 @@ export default function VideoGpxUploader({
   videoId,
   startTime,
   durationSec,
+  dashcamTimeZone,
   onStored,
   overwrite = false,
   compact = false,
@@ -31,20 +31,23 @@ export default function VideoGpxUploader({
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [timeZone, setTimeZone] = useState(dashcamTimeZone);
   const currentVideoId = useRef(videoId);
+
+  const timeZoneOptions = useMemo(() => {
+    const supported =
+      typeof Intl.supportedValuesOf === "function"
+        ? Intl.supportedValuesOf("timeZone")
+        : [];
+    return [...new Set([dashcamTimeZone, "UTC", "Etc/GMT-2", ...supported])];
+  }, [dashcamTimeZone]);
 
   useEffect(() => {
     currentVideoId.current = videoId;
     setError(null);
     setSuccess(false);
-  }, [videoId]);
-
-  const endTime =
-    startTime && Number.isFinite(durationSec ?? Number.NaN)
-      ? new Date(
-          new Date(startTime).getTime() + (durationSec || 0) * 1000,
-        ).toISOString()
-      : null;
+    setTimeZone(dashcamTimeZone);
+  }, [dashcamTimeZone, videoId]);
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] || null;
@@ -53,8 +56,12 @@ export default function VideoGpxUploader({
     setSuccess(false);
     if (!file) return;
 
-    if (!startTime || !endTime) {
+    if (!startTime || !Number.isFinite(durationSec ?? Number.NaN)) {
       setError("Video timing unavailable.");
+      return;
+    }
+    if (!timeZone.trim()) {
+      setError("Select a dashcam time zone.");
       return;
     }
 
@@ -63,26 +70,15 @@ export default function VideoGpxUploader({
 
     try {
       const gpxText = await file.text();
-      const points = parseGpxTrackPoints(gpxText);
-      const cropped = cropGpxTrack(points, startTime, endTime);
-
-      if (cropped.length === 0) {
-        throw new Error("No GPS points fell within video window.");
-      }
-
-      const output = buildGpxDocument(
-        cropped,
-        `${videoId} GPS`,
-        `Auto-cropped to video window from ${file.name}`,
-      );
-
-      await storeRecordedGpx(videoId, output);
+      const result = await storeRecordedGpx(videoId, gpxText, timeZone);
       if (currentVideoId.current === videoId) {
-        await onStored?.();
+        onStored?.(result.pair);
         setSuccess(true);
       }
     } catch (err: any) {
-      setError(err?.message || "Failed to crop GPX file");
+      setError(
+        err?.response?.data?.error || err?.message || "Failed to crop GPX file",
+      );
     } finally {
       setProcessing(false);
     }
@@ -117,13 +113,35 @@ export default function VideoGpxUploader({
         </>
       )}
 
+      <FormControl size="sm" sx={{ width: compact ? 220 : "100%" }}>
+        <FormLabel>Dashcam time zone</FormLabel>
+        <Autocomplete
+          freeSolo
+          size="sm"
+          options={timeZoneOptions}
+          value={timeZone}
+          onChange={(_event, value) => setTimeZone(value || "")}
+          onInputChange={(_event, value) => setTimeZone(value)}
+          slotProps={{
+            input: {
+              "aria-label": "Dashcam time zone",
+            },
+          }}
+        />
+      </FormControl>
+
       <Button
         component="label"
         variant={overwrite ? "solid" : "soft"}
         color={overwrite ? "warning" : "primary"}
         size="sm"
         loading={processing}
-        disabled={processing || !startTime || !endTime}
+        disabled={
+          processing ||
+          !startTime ||
+          !Number.isFinite(durationSec ?? Number.NaN) ||
+          !timeZone.trim()
+        }
         startDecorator={<UploadFileIcon />}
         sx={{ alignSelf: "flex-start" }}>
         {overwrite ? "Overwrite GPS with GPX" : "Choose GPX file"}

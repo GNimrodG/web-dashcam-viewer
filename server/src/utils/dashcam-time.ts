@@ -39,3 +39,11 @@ export function parseDashcamFilenameTimeIso(
   if (!value.isValid) return undefined;
   return value.toUTC().toISO({ suppressMilliseconds: true }) || undefined;
 }
+
+export function parseDashcamPairIdTimeIso(
+  pairId: string,
+  timeZone: string,
+): string | undefined {
+  const [date, time] = pairId.split("_");
+  return parseDashcamFilenameTimeIso({ date, time }, timeZone);
+}

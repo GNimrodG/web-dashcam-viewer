@@ -60,6 +60,7 @@ export interface VideoPair {
   endState?: string;
   endCity?: string;
   poiCount?: number;
+  dashcamTimeZone?: string;
 }
 
 export interface GPSPoint {
@@ -101,8 +102,17 @@ export interface GpsMapCatalog {
 export async function storeRecordedGpx(
   id: string,
   gpxXml: string,
-): Promise<{ success: boolean; message: string; filePath: string }> {
-  const { data } = await api.post(`/videos/${id}/gps/gpx`, { gpxXml });
+  timeZone: string,
+): Promise<{
+  success: boolean;
+  message: string;
+  filePath: string;
+  pair: VideoPair;
+}> {
+  const { data } = await api.post(`/videos/${id}/gps/gpx`, {
+    gpxXml,
+    timeZone,
+  });
   return data;
 }
 

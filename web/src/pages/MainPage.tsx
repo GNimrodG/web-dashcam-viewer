@@ -12,7 +12,7 @@ interface OutletContext {
 }
 
 export default function MainPage() {
-  const { activePair } = useOutletContext<OutletContext>();
+  const { activePair, setActivePair } = useOutletContext<OutletContext>();
   const [currentTimeSec, setCurrentTimeSec] = useState<number>(0);
   const [seekRequest, setSeekRequest] = useState<{
     timeSec: number;
@@ -68,6 +68,7 @@ export default function MainPage() {
         currentTimeSec={currentTimeSec}
         onSeek={handleMapSeek}
         pois={pois}
+        onPairUpdated={setActivePair}
       />
     </Box>
   );
