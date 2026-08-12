@@ -7,7 +7,7 @@ import {
 } from "../middleware/auth.js";
 import { logger } from "../logger.js";
 import { loadConfig } from "../config.js";
-import { sanitizeReturnPath } from "../utils/http.js";
+import { resolvePostLoginRedirect, sanitizeReturnPath } from "../utils/http.js";
 
 const router = express.Router();
 const config = loadConfig();
@@ -52,10 +52,12 @@ router.get("/callback", async (req, res) => {
     const returnUrl = req.session.returnUrl;
     delete req.session.returnUrl;
 
-    // Redirect to frontend (with hash if provided)
-    const redirectUrl = returnUrl
-      ? new URL(returnUrl, config.FRONTEND_URL).href
-      : config.FRONTEND_URL;
+    const redirectUrl = resolvePostLoginRedirect({
+      returnPath: returnUrl,
+      frontendUrl: config.FRONTEND_URL,
+      oidcRedirectUri: config.AUTHENTIK_REDIRECT_URI,
+      requestOrigin: `${req.protocol}://${req.get("host")}`,
+    });
     res.redirect(redirectUrl);
   } catch (error) {
     logger.error({ error }, "OAuth callback failed");

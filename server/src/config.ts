@@ -14,6 +14,7 @@ export function loadConfig() {
   }
 
   const AUTH_ENABLED = process.env.AUTH_ENABLED === "true";
+  const SERVE_WEB = process.env.SERVE_WEB === "true";
 
   // Authentik OIDC configuration
   const AUTHENTIK_ISSUER = process.env.AUTHENTIK_ISSUER || "";
@@ -22,7 +23,11 @@ export function loadConfig() {
   const AUTHENTIK_REDIRECT_URI = process.env.AUTHENTIK_REDIRECT_URI || "";
   const SESSION_SECRET =
     process.env.SESSION_SECRET || "change-me-in-production";
-  const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+  const FRONTEND_URL =
+    process.env.FRONTEND_URL?.trim() ||
+    (!SERVE_WEB && process.env.NODE_ENV !== "production"
+      ? "http://localhost:5173"
+      : "");
   const DASHCAM_TIME_ZONE = getDashcamTimeZone();
 
   if (AUTH_ENABLED) {
@@ -49,7 +54,7 @@ export function loadConfig() {
   return {
     MEDIA_DIR,
     PORT: Number(process.env.PORT || 5174),
-    SERVE_WEB: process.env.SERVE_WEB === "true",
+    SERVE_WEB,
     AUTH_ENABLED,
     AUTHENTIK_ISSUER,
     AUTHENTIK_CLIENT_ID,

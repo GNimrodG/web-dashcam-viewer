@@ -67,3 +67,49 @@ export function sanitizeReturnPath(value: unknown): string | null {
     return null;
   }
 }
+
+function parseHttpUrl(value: string): URL | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackUrl(url: URL): boolean {
+  return (
+    url.hostname === "localhost" ||
+    url.hostname === "127.0.0.1" ||
+    url.hostname === "[::1]"
+  );
+}
+
+export function resolvePostLoginRedirect(options: {
+  returnPath?: string | null;
+  frontendUrl?: string;
+  oidcRedirectUri?: string;
+  requestOrigin: string;
+}): string {
+  const requestedFrontend = parseHttpUrl(options.frontendUrl || "");
+  const oidcCallback = parseHttpUrl(options.oidcRedirectUri || "");
+  const requestOrigin = parseHttpUrl(options.requestOrigin);
+  const configuredFrontend =
+    requestedFrontend &&
+    oidcCallback &&
+    isLoopbackUrl(requestedFrontend) &&
+    !isLoopbackUrl(oidcCallback)
+      ? null
+      : requestedFrontend;
+  const base = configuredFrontend || oidcCallback || requestOrigin;
+
+  if (!base) throw new TypeError("Unable to determine frontend URL");
+
+  const returnPath = sanitizeReturnPath(options.returnPath);
+  if (returnPath) return new URL(returnPath, base.origin).href;
+  if (configuredFrontend) return configuredFrontend.href;
+  return `${base.origin}/`;
+}

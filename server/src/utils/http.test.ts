@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   isSafeClipFilename,
   parseByteRange,
+  resolvePostLoginRedirect,
   sanitizeReturnPath,
 } from "./http.js";
 
@@ -34,4 +35,55 @@ test("return paths stay local", () => {
   assert.equal(sanitizeReturnPath("https://evil.example/"), null);
   assert.equal(sanitizeReturnPath("//evil.example/"), null);
   assert.equal(sanitizeReturnPath(undefined), null);
+});
+
+test("post-login redirects prefer an explicitly configured frontend", () => {
+  assert.equal(
+    resolvePostLoginRedirect({
+      returnPath: "/clips#item",
+      frontendUrl: "https://viewer.example.com",
+      oidcRedirectUri: "https://api.example.com/api/auth/callback",
+      requestOrigin: "http://internal:3000",
+    }),
+    "https://viewer.example.com/clips#item",
+  );
+});
+
+test("post-login redirects derive the production origin from the OIDC callback", () => {
+  assert.equal(
+    resolvePostLoginRedirect({
+      returnPath: "/#recording-1",
+      oidcRedirectUri: "https://dashcam.example.com/api/auth/callback",
+      requestOrigin: "http://internal:3000",
+    }),
+    "https://dashcam.example.com/#recording-1",
+  );
+  assert.equal(
+    resolvePostLoginRedirect({
+      oidcRedirectUri: "https://dashcam.example.com/api/auth/callback",
+      requestOrigin: "http://internal:3000",
+    }),
+    "https://dashcam.example.com/",
+  );
+});
+
+test("post-login redirects ignore a stale localhost frontend for a public callback", () => {
+  assert.equal(
+    resolvePostLoginRedirect({
+      frontendUrl: "http://localhost:5173",
+      oidcRedirectUri: "https://dashcam.example.com/api/auth/callback",
+      requestOrigin: "http://internal:3000",
+    }),
+    "https://dashcam.example.com/",
+  );
+});
+
+test("post-login redirects fall back to the proxy-aware request origin", () => {
+  assert.equal(
+    resolvePostLoginRedirect({
+      returnPath: "/recordings-map",
+      requestOrigin: "https://dashcam.example.com",
+    }),
+    "https://dashcam.example.com/recordings-map",
+  );
 });

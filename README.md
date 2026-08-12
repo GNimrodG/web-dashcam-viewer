@@ -157,7 +157,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `AUTHENTIK_CLIENT_SECRET` - OAuth2 client secret
 - `AUTHENTIK_REDIRECT_URI` - OAuth2 callback URL
 - `SESSION_SECRET` - Session encryption key (generate random string)
-- `FRONTEND_URL` - Frontend URL for post-login redirect
+- `FRONTEND_URL` - Optional frontend URL for post-login redirects when the UI is hosted separately. If omitted in production or bundled-server mode, the server uses the public origin from `AUTHENTIK_REDIRECT_URI` (or the proxy-aware request origin). Split development mode defaults to `http://localhost:5173`.
 
 #### Performance & Storage
 
@@ -445,7 +445,7 @@ export function parseFilenameForPairing(filePath: string): ParsedFilename {
 
 **Authentication redirect issues:**
 
-- Ensure `FRONTEND_URL` matches your domain
+- If set, ensure `FRONTEND_URL` matches your public domain; omit it when the server hosts the UI on the same origin
 - Set `AUTHENTIK_REDIRECT_URI` correctly
 - Check reverse proxy forwards `X-Forwarded-*` headers
 
