@@ -15,9 +15,12 @@ import {
   getRecordingTimeZones,
   getRecordingStartTime,
   getRecordingStartTimes,
+  getRecordingOverlayMetadata,
+  getRecordingOverlayMetadataMap,
   initDatabase,
   setRecordingTimeZone,
   setRecordingStartTime,
+  upsertRecordingOverlayMetadata,
 } from "./database";
 
 test("persists, orders, and deletes video POIs within their recording", () => {
@@ -79,6 +82,31 @@ test("persists, orders, and deletes video POIs within their recording", () => {
     ]);
     deleteRecordingStartTime("recording-b");
     assert.equal(getRecordingStartTime("recording-b"), undefined);
+
+    assert.equal(getRecordingOverlayMetadata("recording-a"), undefined);
+    upsertRecordingOverlayMetadata({
+      videoId: "recording-a",
+      cameraType: "VIOFO A139 PRO",
+      licensePlate: "TEST123",
+      sourcePath: "RO/recording-a.mp4",
+      sourceMtimeMs: 1234,
+      extractorVersion: 1,
+      status: "found",
+      scannedAt: 5678,
+      frameTimeSec: 30,
+    });
+    assert.deepEqual(getRecordingOverlayMetadata("recording-a"), {
+      videoId: "recording-a",
+      cameraType: "VIOFO A139 PRO",
+      licensePlate: "TEST123",
+      sourcePath: "RO/recording-a.mp4",
+      sourceMtimeMs: 1234,
+      extractorVersion: 1,
+      status: "found",
+      scannedAt: 5678,
+      frameTimeSec: 30,
+    });
+    assert.equal(getRecordingOverlayMetadataMap().size, 1);
 
     closeDatabase();
     initDatabase(mediaDir);

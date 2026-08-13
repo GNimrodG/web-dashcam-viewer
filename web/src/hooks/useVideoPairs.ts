@@ -46,5 +46,21 @@ export function useVideoPairs(): UseVideoPairsResult {
     };
   }, [refreshToken]);
 
+  useEffect(() => {
+    if (!pairs.some((pair) => pair.overlayMetadataStatus === "pending")) return;
+    let canceled = false;
+    const timer = globalThis.setTimeout(() => {
+      fetchPairs()
+        .then((data) => {
+          if (!canceled) setPairs(data);
+        })
+        .catch(() => {});
+    }, 3000);
+    return () => {
+      canceled = true;
+      globalThis.clearTimeout(timer);
+    };
+  }, [pairs]);
+
   return { pairs, loading, error, refresh, updatePair };
 }

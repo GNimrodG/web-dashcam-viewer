@@ -861,7 +861,16 @@ export function Player({
               </Menu>
             </Dropdown>
 
-            <Typography level="title-md">{formatPairTime(pair)}</Typography>
+            <Stack spacing={0}>
+              <Typography level="title-md">{formatPairTime(pair)}</Typography>
+              {(pair.cameraType || pair.licensePlate) && (
+                <Typography level="body-xs" color="neutral">
+                  {[pair.cameraType, pair.licensePlate]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </Typography>
+              )}
+            </Stack>
           </Stack>
         </Stack>
       </Stack>

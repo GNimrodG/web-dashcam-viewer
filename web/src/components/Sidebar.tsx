@@ -281,7 +281,10 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
           formatPairTime(p).replaceAll(/\D/g, "").includes(idSearch)) ||
         (placeSearch &&
           p.startLocationName?.toLowerCase().includes(placeSearch)) ||
-        (placeSearch && p.endLocationName?.toLowerCase().includes(placeSearch)),
+        (placeSearch &&
+          p.endLocationName?.toLowerCase().includes(placeSearch)) ||
+        (placeSearch && p.cameraType?.toLowerCase().includes(placeSearch)) ||
+        (placeSearch && p.licensePlate?.toLowerCase().includes(placeSearch)),
     );
   }, [importantOnly, pairs, search]);
 
@@ -1013,6 +1016,22 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                             .join(", ")}
                                           )
                                         </Typography>
+                                        {(p.cameraType || p.licensePlate) && (
+                                          <Typography
+                                            level="body-xs"
+                                            color="neutral"
+                                            noWrap
+                                            title={[
+                                              p.cameraType,
+                                              p.licensePlate,
+                                            ]
+                                              .filter(Boolean)
+                                              .join(" · ")}>
+                                            {[p.cameraType, p.licensePlate]
+                                              .filter(Boolean)
+                                              .join(" · ")}
+                                          </Typography>
+                                        )}
                                         <PairLocation pair={p} />
                                       </ListItemContent>
                                     </ListItemButton>

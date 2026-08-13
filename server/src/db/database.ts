@@ -21,6 +21,38 @@ export interface VideoPoi {
   createdAt: number;
 }
 
+export interface RecordingOverlayMetadata {
+  videoId: string;
+  cameraType?: string;
+  licensePlate?: string;
+  sourcePath: string;
+  sourceMtimeMs: number;
+  extractorVersion: number;
+  status: "found" | "not-found" | "failed";
+  scannedAt: number;
+  frameTimeSec?: number;
+}
+
+type RecordingOverlayMetadataRow = Omit<
+  RecordingOverlayMetadata,
+  "cameraType" | "licensePlate" | "frameTimeSec"
+> & {
+  cameraType: string | null;
+  licensePlate: string | null;
+  frameTimeSec: number | null;
+};
+
+function mapRecordingOverlayMetadataRow(
+  row: RecordingOverlayMetadataRow,
+): RecordingOverlayMetadata {
+  return {
+    ...row,
+    cameraType: row.cameraType ?? undefined,
+    licensePlate: row.licensePlate ?? undefined,
+    frameTimeSec: row.frameTimeSec ?? undefined,
+  };
+}
+
 let db: Database.Database;
 
 export function initDatabase(mediaDir: string) {
@@ -77,6 +109,20 @@ export function initDatabase(mediaDir: string) {
     CREATE TABLE IF NOT EXISTS recording_start_times (
       video_id TEXT PRIMARY KEY,
       start_time TEXT NOT NULL
+    )
+  `);
+
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS recording_overlay_metadata (
+      video_id TEXT PRIMARY KEY,
+      camera_type TEXT,
+      license_plate TEXT,
+      source_path TEXT NOT NULL,
+      source_mtime_ms REAL NOT NULL,
+      extractor_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      scanned_at INTEGER NOT NULL,
+      frame_time_sec REAL
     )
   `);
 
@@ -275,6 +321,82 @@ export function getRecordingStartTimes(): Map<string, string> {
     )
     .all() as Array<{ videoId: string; startTime: string }>;
   return new Map(rows.map((row) => [row.videoId, row.startTime]));
+}
+
+export function getRecordingOverlayMetadata(
+  videoId: string,
+): RecordingOverlayMetadata | undefined {
+  const row = db
+    .prepare(
+      `SELECT
+         video_id as videoId,
+         camera_type as cameraType,
+         license_plate as licensePlate,
+         source_path as sourcePath,
+         source_mtime_ms as sourceMtimeMs,
+         extractor_version as extractorVersion,
+         status,
+         scanned_at as scannedAt,
+         frame_time_sec as frameTimeSec
+       FROM recording_overlay_metadata
+       WHERE video_id = ?`,
+    )
+    .get(videoId) as RecordingOverlayMetadataRow | undefined;
+  return row ? mapRecordingOverlayMetadataRow(row) : undefined;
+}
+
+export function getRecordingOverlayMetadataMap(): Map<
+  string,
+  RecordingOverlayMetadata
+> {
+  const rows = db
+    .prepare(
+      `SELECT
+         video_id as videoId,
+         camera_type as cameraType,
+         license_plate as licensePlate,
+         source_path as sourcePath,
+         source_mtime_ms as sourceMtimeMs,
+         extractor_version as extractorVersion,
+         status,
+         scanned_at as scannedAt,
+         frame_time_sec as frameTimeSec
+       FROM recording_overlay_metadata`,
+    )
+    .all() as RecordingOverlayMetadataRow[];
+  return new Map(
+    rows.map((row) => [row.videoId, mapRecordingOverlayMetadataRow(row)]),
+  );
+}
+
+export function upsertRecordingOverlayMetadata(
+  metadata: RecordingOverlayMetadata,
+): void {
+  db.prepare(
+    `INSERT INTO recording_overlay_metadata
+       (video_id, camera_type, license_plate, source_path, source_mtime_ms,
+        extractor_version, status, scanned_at, frame_time_sec)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(video_id) DO UPDATE SET
+       camera_type = excluded.camera_type,
+       license_plate = excluded.license_plate,
+       source_path = excluded.source_path,
+       source_mtime_ms = excluded.source_mtime_ms,
+       extractor_version = excluded.extractor_version,
+       status = excluded.status,
+       scanned_at = excluded.scanned_at,
+       frame_time_sec = excluded.frame_time_sec`,
+  ).run(
+    metadata.videoId,
+    metadata.cameraType ?? null,
+    metadata.licensePlate ?? null,
+    metadata.sourcePath,
+    metadata.sourceMtimeMs,
+    metadata.extractorVersion,
+    metadata.status,
+    metadata.scannedAt,
+    metadata.frameTimeSec ?? null,
+  );
 }
 
 export function deleteVideoPoi(videoId: string, poiId: string): boolean {

@@ -11,6 +11,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - **Real-time file watching** with network share support
 - **HTTP range streaming** for efficient video delivery
 - **Cross-platform path handling** (Windows/Linux compatible)
+- **Camera and license plate OCR** from the recording's on-video overlay
 
 ### GPS & Location
 
@@ -60,6 +61,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - **Node.js 18+** and yarn
 - **FFmpeg/ffprobe** installed and available in PATH
 - **ExifTool** (optional, for enhanced GPS extraction)
+- **Tesseract OCR** with English language data (included in the Docker image)
 - **Authentik server** (optional, for authentication)
 
 ## Quick Start
@@ -163,6 +165,8 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 
 - `INDEX_CONCURRENCY` - Parallel indexing operations (default: `2`)
 - `GPS_CONCURRENT_LIMIT` - Parallel GPS extractions (default: `5`)
+- `OVERLAY_OCR_CONCURRENCY` - Parallel camera/plate OCR scans (default: `1`)
+- `OVERLAY_OCR_ENABLED` - Set to `0` to disable camera/plate OCR (default: enabled)
 - `IND Reference
 
 ### Videos

@@ -68,9 +68,10 @@ FROM node:22-alpine
 ARG YARN_NETWORK_TIMEOUT
 
 # Install video and metadata extraction tools
-RUN apk add --no-cache ffmpeg exiftool \
+RUN apk add --no-cache ffmpeg exiftool tesseract-ocr tesseract-ocr-data-eng \
     && ffprobe -version >/dev/null \
-    && exiftool -ver >/dev/null
+    && exiftool -ver >/dev/null \
+    && tesseract --version >/dev/null
 
 WORKDIR /app
 

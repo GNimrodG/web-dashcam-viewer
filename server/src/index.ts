@@ -11,7 +11,11 @@ import express from "express";
 import session from "express-session";
 import pinoHttp from "pino-http";
 import cors from "cors";
-import { buildIndex, watchMediaFolder } from "./services/indexer.js";
+import {
+  buildIndex,
+  getVideoPairs,
+  watchMediaFolder,
+} from "./services/indexer.js";
 import videosRouter from "./routes/videos.js";
 import authRouter from "./routes/auth.js";
 import sharesRouter from "./routes/shares.js";
@@ -19,6 +23,7 @@ import { processManager } from "./utils/process-manager.js";
 import { initDatabase, closeDatabase } from "./db/database.js";
 import { initOIDC, requireAuth, optionalAuth } from "./middleware/auth.js";
 import { cleanupOrphanedThumbnails } from "./services/thumbnail.js";
+import { startOverlayMetadataScanner } from "./services/overlay-metadata.js";
 
 logger.info("Starting server...");
 
@@ -136,4 +141,7 @@ app.listen(config.PORT, () => {
     },
     "Server listening",
   );
+  startOverlayMetadataScanner(() => getVideoPairs()).catch((error) => {
+    logger.warn({ error }, "Failed to start recording overlay scanner");
+  });
 });

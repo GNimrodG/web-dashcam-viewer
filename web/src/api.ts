@@ -64,6 +64,9 @@ export interface VideoPair {
   gpsDisabled?: boolean;
   hasExternalGps?: boolean;
   recordingStartTimeOverride?: string;
+  cameraType?: string;
+  licensePlate?: string;
+  overlayMetadataStatus?: "pending" | "found" | "not-found" | "failed";
 }
 
 export interface GPSPoint {
