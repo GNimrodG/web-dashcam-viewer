@@ -39,6 +39,8 @@ import FormControl from "@mui/joy/FormControl";
 import FormLabel from "@mui/joy/FormLabel";
 import Radio from "@mui/joy/Radio";
 import RadioGroup from "@mui/joy/RadioGroup";
+import Select from "@mui/joy/Select";
+import Option from "@mui/joy/Option";
 import type { Mark } from "@mui/base/useSlider";
 import { useHotkeys } from "@mantine/hooks";
 import { formatPairTime } from "../utils/recording-time";
@@ -55,6 +57,21 @@ import {
   KEYBOARD_SEEK_SECONDS,
 } from "../utils/playback-seek";
 import EditRecordingMetadataModal from "./EditRecordingMetadataModal";
+import {
+  calculateClipPreviewLayout,
+  DEFAULT_PIP_CORNER,
+  DEFAULT_PIP_SIZE_PERCENT,
+  isPictureInPictureMode,
+  MAX_PIP_SIZE_PERCENT,
+  MIN_PIP_SIZE_PERCENT,
+  type ClipChannelMode,
+  type PipCorner,
+} from "../utils/clip-layout";
+
+interface PreviewFrameSet {
+  front?: HTMLCanvasElement;
+  rear?: HTMLCanvasElement;
+}
 
 interface PlayerProps {
   pair: VideoPair | null;
@@ -136,9 +153,12 @@ export function Player({
   const [showClipDialog, setShowClipDialog] = useState(false);
   const [clipStartTime, setClipStartTime] = useState(0);
   const [clipEndTime, setClipEndTime] = useState(0);
-  const [clipChannels, setClipChannels] = useState<
-    "front" | "rear" | "both-stacked" | "both-side-by-side"
-  >("front");
+  const [clipChannels, setClipChannels] = useState<ClipChannelMode>("front");
+  const [clipPipSizePercent, setClipPipSizePercent] = useState(
+    DEFAULT_PIP_SIZE_PERCENT,
+  );
+  const [clipPipCorner, setClipPipCorner] =
+    useState<PipCorner>(DEFAULT_PIP_CORNER);
   const [clipAudioVolume, setClipAudioVolume] = useState(1); // 0-1 (0=mute, 1=original)
   const [isCreatingClip, setIsCreatingClip] = useState(false);
   const [clipJobStatus, setClipJobStatus] = useState<ClipJobStatus | null>(
@@ -153,6 +173,19 @@ export function Player({
   const [showMetadataDialog, setShowMetadataDialog] = useState(false);
   const startPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const endPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const startPreviewFramesRef = useRef<PreviewFrameSet>({});
+  const endPreviewFramesRef = useRef<PreviewFrameSet>({});
+  const previewRequestIdRef = useRef(0);
+  const previewOptionsRef = useRef({
+    channels: clipChannels,
+    pipSizePercent: clipPipSizePercent,
+    pipCorner: clipPipCorner,
+  });
+  previewOptionsRef.current = {
+    channels: clipChannels,
+    pipSizePercent: clipPipSizePercent,
+    pipCorner: clipPipCorner,
+  };
 
   // Store original video times when opening clip dialog
   const originalTimeFrontRef = useRef<number>(0);
@@ -160,8 +193,10 @@ export function Player({
 
   const handleOpenClipDialog = () => {
     const currentTime = frontRef.current?.currentTime || 0;
-    setClipStartTime(Math.max(0, currentTime - 10));
-    setClipEndTime(Math.min(pair?.durationSec || 0, currentTime + 10));
+    const startTime = Math.max(0, currentTime - 10);
+    const endTime = Math.min(pair?.durationSec || 0, currentTime + 10);
+    setClipStartTime(startTime);
+    setClipEndTime(endTime);
 
     // Store original times
     originalTimeFrontRef.current = frontRef.current?.currentTime || 0;
@@ -178,7 +213,7 @@ export function Player({
     setClipJobStatus(null);
 
     // Update preview frames after a short delay to ensure dialog is rendered
-    setTimeout(updatePreviewFrames, 100);
+    setTimeout(() => void updatePreviewFrames("both", startTime, endTime), 100);
   };
 
   const restoreClipPreviewPosition = () => {
@@ -192,117 +227,170 @@ export function Player({
 
   const handleCloseClipDialog = () => {
     if (isCreatingClip) return;
+    previewRequestIdRef.current += 1;
     restoreClipPreviewPosition();
     setShowClipDialog(false);
   };
 
-  // Update preview frames when time changes
-  const updatePreviewFrames = (which: "start" | "end" | "both" = "both") => {
-    const captureFrame = (canvas: HTMLCanvasElement) => {
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+  const capturePreviewFrame = (video: HTMLVideoElement): HTMLCanvasElement => {
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    return canvas;
+  };
 
-      if (clipChannels === "front" && frontRef.current) {
-        canvas.width = frontRef.current.videoWidth;
-        canvas.height = frontRef.current.videoHeight;
-        ctx.drawImage(frontRef.current, 0, 0);
-      } else if (clipChannels === "rear" && rearRef.current) {
-        canvas.width = rearRef.current.videoWidth;
-        canvas.height = rearRef.current.videoHeight;
-        ctx.drawImage(rearRef.current, 0, 0);
-      } else if (
-        clipChannels === "both-stacked" &&
-        frontRef.current &&
-        rearRef.current
-      ) {
-        // Stack vertically: front on top, rear on bottom
-        const width = Math.max(
-          frontRef.current.videoWidth,
-          rearRef.current.videoWidth,
-        );
-        const height = Math.max(
-          frontRef.current.videoHeight,
-          rearRef.current.videoHeight,
-        );
-        canvas.width = width;
-        canvas.height = height * 2;
+  const captureAvailablePreviewFrames = (): PreviewFrameSet => ({
+    ...(frontRef.current?.videoWidth
+      ? { front: capturePreviewFrame(frontRef.current) }
+      : {}),
+    ...(rearRef.current?.videoWidth
+      ? { rear: capturePreviewFrame(rearRef.current) }
+      : {}),
+  });
 
-        // Draw front on top
-        ctx.drawImage(frontRef.current, 0, 0, width, height);
-        // Draw rear on bottom
-        ctx.drawImage(rearRef.current, 0, height, width, height);
-      } else if (
-        clipChannels === "both-side-by-side" &&
-        frontRef.current &&
-        rearRef.current
-      ) {
-        // Place side by side: front on left, rear on right
-        const width = Math.max(
-          frontRef.current.videoWidth,
-          rearRef.current.videoWidth,
-        );
-        const height = Math.max(
-          frontRef.current.videoHeight,
-          rearRef.current.videoHeight,
-        );
-        canvas.width = width * 2;
-        canvas.height = height;
+  const renderPreviewCanvas = (
+    canvas: HTMLCanvasElement | null,
+    frames: PreviewFrameSet,
+  ) => {
+    if (!canvas) return;
+    const { channels, pipSizePercent, pipCorner } = previewOptionsRef.current;
+    const layout = calculateClipPreviewLayout({
+      mode: channels,
+      front: frames.front
+        ? { width: frames.front.width, height: frames.front.height }
+        : undefined,
+      rear: frames.rear
+        ? { width: frames.rear.width, height: frames.rear.height }
+        : undefined,
+      pipSizePercent,
+      pipCorner,
+    });
+    const context = canvas.getContext("2d");
+    if (!layout || !context) return;
 
-        // Draw front on left
-        ctx.drawImage(frontRef.current, 0, 0, width, height);
-        // Draw rear on right
-        ctx.drawImage(
-          rearRef.current,
-          frontRef.current.videoWidth,
-          0,
-          width,
-          height,
-        );
+    canvas.width = layout.width;
+    canvas.height = layout.height;
+    context.clearRect(0, 0, layout.width, layout.height);
+
+    const drawOrder: Array<keyof PreviewFrameSet> =
+      channels === "rear-pip-front" ? ["rear", "front"] : ["front", "rear"];
+    for (const channel of drawOrder) {
+      const frame = frames[channel];
+      const rect = layout[channel];
+      if (frame && rect) {
+        context.drawImage(frame, rect.x, rect.y, rect.width, rect.height);
       }
-    };
-
-    const primaryRef = frontRef.current || rearRef.current;
-    if (!primaryRef) return;
-
-    // Only update the preview that changed
-    if (which === "start" || which === "both") {
-      // Seek to start time
-      if (frontRef.current) frontRef.current.currentTime = clipStartTime;
-      if (rearRef.current) rearRef.current.currentTime = clipStartTime;
-
-      primaryRef.onseeked = () => {
-        if (startPreviewCanvasRef.current) {
-          captureFrame(startPreviewCanvasRef.current);
-        }
-
-        // If we also need to update end, do it after start is done
-        if (which === "both") {
-          if (frontRef.current) frontRef.current.currentTime = clipEndTime;
-          if (rearRef.current) rearRef.current.currentTime = clipEndTime;
-
-          primaryRef.onseeked = () => {
-            if (endPreviewCanvasRef.current) {
-              captureFrame(endPreviewCanvasRef.current);
-            }
-            primaryRef.onseeked = null;
-          };
-        } else {
-          primaryRef.onseeked = null;
-        }
-      };
-    } else if (which === "end") {
-      // Only seek to end time
-      if (frontRef.current) frontRef.current.currentTime = clipEndTime;
-      if (rearRef.current) rearRef.current.currentTime = clipEndTime;
-
-      primaryRef.onseeked = () => {
-        if (endPreviewCanvasRef.current) {
-          captureFrame(endPreviewCanvasRef.current);
-        }
-        primaryRef.onseeked = null;
-      };
     }
   };
+
+  const renderCachedPreviews = () => {
+    renderPreviewCanvas(
+      startPreviewCanvasRef.current,
+      startPreviewFramesRef.current,
+    );
+    renderPreviewCanvas(
+      endPreviewCanvasRef.current,
+      endPreviewFramesRef.current,
+    );
+  };
+
+  const waitForPreviewVideoReady = async (
+    video: HTMLVideoElement,
+  ): Promise<boolean> => {
+    if (video.readyState >= 2 && video.videoWidth > 0) return true;
+
+    return new Promise<boolean>((resolve) => {
+      let timeoutId = 0;
+      const finish = (ready: boolean) => {
+        window.clearTimeout(timeoutId);
+        video.removeEventListener("loadeddata", handleLoadedData);
+        video.removeEventListener("error", handleError);
+        resolve(ready);
+      };
+      const handleLoadedData = () => finish(video.videoWidth > 0);
+      const handleError = () => finish(false);
+
+      video.addEventListener("loadeddata", handleLoadedData, { once: true });
+      video.addEventListener("error", handleError, { once: true });
+      timeoutId = window.setTimeout(
+        () => finish(video.readyState >= 2 && video.videoWidth > 0),
+        5_000,
+      );
+    });
+  };
+
+  const seekVideoForPreview = async (
+    video: HTMLVideoElement,
+    requestedTime: number,
+  ): Promise<void> => {
+    const latestFrameTime = Number.isFinite(video.duration)
+      ? Math.max(0, video.duration - 1 / 30)
+      : requestedTime;
+    const targetTime = Math.min(requestedTime, latestFrameTime);
+    if (
+      video.readyState >= 2 &&
+      Math.abs(video.currentTime - targetTime) < 0.01
+    ) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let timeoutId = 0;
+      const finish = () => {
+        window.clearTimeout(timeoutId);
+        video.removeEventListener("seeked", finish);
+        video.removeEventListener("error", finish);
+        resolve();
+      };
+      video.addEventListener("seeked", finish, { once: true });
+      video.addEventListener("error", finish, { once: true });
+      timeoutId = window.setTimeout(finish, 5_000);
+      try {
+        video.currentTime = targetTime;
+      } catch {
+        finish();
+      }
+    });
+  };
+
+  const capturePreviewAt = async (time: number): Promise<PreviewFrameSet> => {
+    const videos = [frontRef.current, rearRef.current].filter(
+      (video): video is HTMLVideoElement => Boolean(video),
+    );
+    const ready = await Promise.all(
+      videos.map((video) => waitForPreviewVideoReady(video)),
+    );
+    await Promise.all(
+      videos.map((video, index) =>
+        ready[index] ? seekVideoForPreview(video, time) : Promise.resolve(),
+      ),
+    );
+    return captureAvailablePreviewFrames();
+  };
+
+  const updatePreviewFrames = async (
+    which: "start" | "end" | "both" = "both",
+    startTime = clipStartTime,
+    endTime = clipEndTime,
+  ) => {
+    const requestId = ++previewRequestIdRef.current;
+    if (which === "start" || which === "both") {
+      const frames = await capturePreviewAt(startTime);
+      if (requestId !== previewRequestIdRef.current) return;
+      startPreviewFramesRef.current = frames;
+      renderPreviewCanvas(startPreviewCanvasRef.current, frames);
+    }
+    if (which === "end" || which === "both") {
+      const frames = await capturePreviewAt(endTime);
+      if (requestId !== previewRequestIdRef.current) return;
+      endPreviewFramesRef.current = frames;
+      renderPreviewCanvas(endPreviewCanvasRef.current, frames);
+    }
+  };
+
+  useEffect(() => {
+    if (showClipDialog) renderCachedPreviews();
+  }, [showClipDialog, clipChannels, clipPipSizePercent, clipPipCorner]);
 
   const handleCreateClip = async () => {
     if (!pair) return;
@@ -315,7 +403,15 @@ export function Player({
         clipStartTime,
         clipEndTime,
         clipChannels,
-        clipAudioVolume,
+        {
+          audioVolume: clipAudioVolume,
+          ...(isPictureInPictureMode(clipChannels)
+            ? {
+                pipSizePercent: clipPipSizePercent,
+                pipCorner: clipPipCorner,
+              }
+            : {}),
+        },
       );
       await new Promise<void>((resolve, reject) => {
         clipJobCleanupRef.current = watchClipJob(job.statusUrl, (status) => {
@@ -1244,20 +1340,30 @@ export function Player({
       </Modal>
 
       {/* Clip Creation Dialog */}
-      <Modal open={showClipDialog} onClose={handleCloseClipDialog}>
-        <ModalDialog sx={{ minWidth: 600, maxWidth: 1000, overflow: "hidden" }}>
+      <Modal
+        open={showClipDialog}
+        onClose={handleCloseClipDialog}
+        sx={{ zIndex: 11000 }}>
+        <ModalDialog
+          sx={{
+            width: "min(1000px, calc(100vw - 32px))",
+            maxHeight: "calc(100dvh - 32px)",
+            overflow: "hidden",
+          }}>
           <DialogTitle>Create Video Clip</DialogTitle>
-          <DialogContent sx={{ overflow: "visible", p: 1 }}>
+          <DialogContent sx={{ overflowY: "auto", overflowX: "hidden", p: 3 }}>
             <Stack spacing={3}>
               {/* Preview Frames */}
               <Stack direction="row" spacing={2} justifyContent="center">
-                <Box sx={{ textAlign: "center" }}>
+                <Box sx={{ minWidth: 0, flex: 1, textAlign: "center" }}>
                   <Typography level="body-sm" sx={{ mb: 1 }}>
                     Start: {formatTime(clipStartTime)}
                   </Typography>
                   <canvas
                     ref={startPreviewCanvasRef}
                     style={{
+                      display: "block",
+                      width: "100%",
                       maxWidth: "100%",
                       height: "auto",
                       border: "2px solid",
@@ -1266,13 +1372,15 @@ export function Player({
                     }}
                   />
                 </Box>
-                <Box sx={{ textAlign: "center" }}>
+                <Box sx={{ minWidth: 0, flex: 1, textAlign: "center" }}>
                   <Typography level="body-sm" sx={{ mb: 1 }}>
                     End: {formatTime(clipEndTime)}
                   </Typography>
                   <canvas
                     ref={endPreviewCanvasRef}
                     style={{
+                      display: "block",
+                      width: "100%",
                       maxWidth: "100%",
                       height: "auto",
                       border: "2px solid",
@@ -1305,11 +1413,11 @@ export function Player({
 
                     // Only update the preview that changed
                     if (startChanged && endChanged) {
-                      updatePreviewFrames("both");
+                      void updatePreviewFrames("both", _start, _end);
                     } else if (startChanged) {
-                      updatePreviewFrames("start");
+                      void updatePreviewFrames("start", _start, _end);
                     } else if (endChanged) {
-                      updatePreviewFrames("end");
+                      void updatePreviewFrames("end", _start, _end);
                     }
                   }}
                   min={0}
@@ -1325,6 +1433,7 @@ export function Player({
                 <FormLabel>Channel(s)</FormLabel>
                 <RadioGroup
                   value={clipChannels}
+                  sx={{ gap: 1 }}
                   onChange={(e) =>
                     setClipChannels(e.target.value as typeof clipChannels)
                   }>
@@ -1354,10 +1463,66 @@ export function Player({
                         value="both-stacked"
                         label="Both (stacked)"
                       />
+                      <Radio
+                        disabled={isCreatingClip}
+                        value="front-pip-rear"
+                        label="Front fullscreen + rear in corner"
+                      />
+                      <Radio
+                        disabled={isCreatingClip}
+                        value="rear-pip-front"
+                        label="Rear fullscreen + front in corner"
+                      />
                     </>
                   )}
                 </RadioGroup>
               </FormControl>
+
+              {isPictureInPictureMode(clipChannels) && (
+                <Stack
+                  direction={{ xs: "column", md: "row" }}
+                  spacing={3}
+                  alignItems={{ md: "flex-end" }}>
+                  <FormControl sx={{ flex: 1 }}>
+                    <FormLabel>
+                      Small image width: {clipPipSizePercent}%
+                    </FormLabel>
+                    <Slider
+                      value={clipPipSizePercent}
+                      onChange={(_, value) =>
+                        setClipPipSizePercent(value as number)
+                      }
+                      min={MIN_PIP_SIZE_PERCENT}
+                      max={MAX_PIP_SIZE_PERCENT}
+                      step={5}
+                      marks={[
+                        { value: MIN_PIP_SIZE_PERCENT, label: "10%" },
+                        { value: DEFAULT_PIP_SIZE_PERCENT, label: "30%" },
+                        { value: MAX_PIP_SIZE_PERCENT, label: "50%" },
+                      ]}
+                      sx={{ mx: 1.5, width: "calc(100% - 24px)" }}
+                      disabled={isCreatingClip}
+                      valueLabelDisplay="auto"
+                      valueLabelFormat={(value) => `${value}%`}
+                    />
+                  </FormControl>
+                  <FormControl sx={{ minWidth: 190 }}>
+                    <FormLabel>Small image corner</FormLabel>
+                    <Select
+                      value={clipPipCorner}
+                      disabled={isCreatingClip}
+                      slotProps={{ listbox: { sx: { zIndex: 11001 } } }}
+                      onChange={(_, value) => {
+                        if (value) setClipPipCorner(value as PipCorner);
+                      }}>
+                      <Option value="top-left">Top left</Option>
+                      <Option value="top-right">Top right</Option>
+                      <Option value="bottom-left">Bottom left</Option>
+                      <Option value="bottom-right">Bottom right</Option>
+                    </Select>
+                  </FormControl>
+                </Stack>
+              )}
 
               <FormControl>
                 <FormLabel>

@@ -27,6 +27,7 @@ import {
 } from "../utils/gps-overlap";
 import { formatPairTime } from "../utils/recording-time";
 import { interpolateGpsPosition } from "../utils/gps-interpolation";
+import { findClosestGpsTime } from "../utils/gps-click-seek";
 
 function formatMapTime(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -35,7 +36,7 @@ function formatMapTime(seconds: number): string {
 }
 
 interface OutletContext {
-  selectPair: (pair: VideoPair | null) => void;
+  selectPair: (pair: VideoPair | null, initialTimeSec?: number) => void;
 }
 
 function routeColor(id: string): string {
@@ -61,7 +62,7 @@ function routeTooltip(track: GpsMapTrack): HTMLElement {
   if (locationLabel) {
     content.append(document.createElement("br"), locationLabel);
   }
-  content.append(document.createElement("br"), "Click to open");
+  content.append(document.createElement("br"), "Click to open at this point");
   return content;
 }
 
@@ -105,10 +106,10 @@ export default function RecordingsMapPage() {
   );
 
   const openRecording = useCallback(
-    async (track: GpsMapTrack) => {
+    async (track: GpsMapTrack, initialTimeSec?: number) => {
       const pair = await fetchPair(track.id);
       if (!pair) return;
-      selectPair(pair);
+      selectPair(pair, initialTimeSec);
     },
     [selectPair],
   );
@@ -142,9 +143,17 @@ export default function RecordingsMapPage() {
         weight: 4,
         opacity: 0.72,
         renderer,
+        bubblingMouseEvents: false,
       })
         .bindTooltip(routeTooltip(track), { sticky: true })
-        .on("click", () => openRecording(track))
+        .on("click", (event) => {
+          const timeSec = findClosestGpsTime(
+            track.points,
+            { lat: event.latlng.lat, lon: event.latlng.lng },
+            (lat, lon) => map.latLngToLayerPoint([lat, lon]),
+          );
+          void openRecording(track, timeSec);
+        })
         .addTo(layers);
 
       for (const poi of track.pois || []) {
@@ -169,7 +178,7 @@ export default function RecordingsMapPage() {
         tooltip.textContent = `${poi.label} · ${formatMapTime(poi.timeSec)} · ${formatPairTime(track)}`;
         marker
           .bindTooltip(tooltip, { direction: "top" })
-          .on("click", () => openRecording(track))
+          .on("click", () => void openRecording(track, poi.timeSec))
           .addTo(layers);
       }
     }

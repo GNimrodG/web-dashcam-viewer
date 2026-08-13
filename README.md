@@ -35,9 +35,9 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 ### Clip Creation & Sharing
 
 - **Custom clip generation** from any time range
-- **Channel selection** (front only, rear only, side-by-side, or stacked)
+- **Channel selection** (front only, rear only, side-by-side, stacked, or either camera fullscreen with the other in a configurable corner)
 - **Audio volume control** for clips
-- **Preview frames** for start/end points
+- **Accurate preview frames** for start/end points, including overlay size and position
 - **Share links** with configurable expiration (1-365 days)
 - **Public sharing** without authentication required
 
@@ -307,7 +307,7 @@ The cache file can be safely deleted and will be regenerated automatically.
 ### Clip Management
 
 - **Visual clip editor** with preview frames
-- **Channel selection** (front, rear, side-by-side, stacked)
+- **Channel selection** (front, rear, side-by-side, stacked, and adjustable picture-in-picture)
 - **Audio volume control** (0-100% or mute)
 - **Thumbnail generation** for all clips
 - **Download or share** generated clips

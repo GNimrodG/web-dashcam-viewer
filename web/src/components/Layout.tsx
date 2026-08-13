@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import Box from "@mui/joy/Box";
 import Header from "./Header";
 import Sidebar from "./Sidebar";
@@ -7,6 +7,11 @@ import { useNavigate, Outlet, useLocation } from "react-router-dom";
 
 export default function Layout() {
   const [activePair, setActivePair] = useState<VideoPair | null>(null);
+  const [pendingSeekRequest, setPendingSeekRequest] = useState<{
+    pairId: string;
+    timeSec: number;
+    requestId: number;
+  }>();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -35,8 +40,22 @@ export default function Layout() {
     }
   }, []);
 
-  const handleSelectPair = (pair: VideoPair | null) => {
+  const handleSelectPair = (
+    pair: VideoPair | null,
+    initialTimeSec?: number,
+  ) => {
     setActivePair(pair);
+    setPendingSeekRequest(
+      pair &&
+        typeof initialTimeSec === "number" &&
+        Number.isFinite(initialTimeSec)
+        ? {
+            pairId: pair.id,
+            timeSec: Math.max(0, initialTimeSec),
+            requestId: Date.now(),
+          }
+        : undefined,
+    );
 
     // Update URL hash
     if (pair) {
@@ -54,6 +73,12 @@ export default function Layout() {
     }
   };
 
+  const consumePendingSeekRequest = useCallback((requestId: number) => {
+    setPendingSeekRequest((currentRequest) =>
+      currentRequest?.requestId === requestId ? undefined : currentRequest,
+    );
+  }, []);
+
   return (
     <Box sx={{ display: "flex", minHeight: "100dvh" }}>
       <Header />
@@ -66,6 +91,8 @@ export default function Layout() {
           activePair,
           setActivePair,
           selectPair: handleSelectPair,
+          pendingSeekRequest,
+          consumePendingSeekRequest,
         }}
       />
     </Box>

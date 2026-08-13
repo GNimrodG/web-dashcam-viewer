@@ -9,10 +9,21 @@ import { useVideoPois } from "../hooks/useVideoPois";
 interface OutletContext {
   activePair: VideoPair | null;
   setActivePair: (pair: VideoPair | null) => void;
+  pendingSeekRequest?: {
+    pairId: string;
+    timeSec: number;
+    requestId: number;
+  };
+  consumePendingSeekRequest: (requestId: number) => void;
 }
 
 export default function MainPage() {
-  const { activePair, setActivePair } = useOutletContext<OutletContext>();
+  const {
+    activePair,
+    setActivePair,
+    pendingSeekRequest,
+    consumePendingSeekRequest,
+  } = useOutletContext<OutletContext>();
   const [currentTimeSec, setCurrentTimeSec] = useState<number>(0);
   const [seekRequest, setSeekRequest] = useState<{
     timeSec: number;
@@ -29,6 +40,16 @@ export default function MainPage() {
     setCurrentTimeSec(0);
     setSeekRequest(undefined);
   }, [activePair?.id]);
+
+  useEffect(() => {
+    if (!activePair || pendingSeekRequest?.pairId !== activePair.id) return;
+    setCurrentTimeSec(pendingSeekRequest.timeSec);
+    setSeekRequest({
+      timeSec: pendingSeekRequest.timeSec,
+      requestId: pendingSeekRequest.requestId,
+    });
+    consumePendingSeekRequest(pendingSeekRequest.requestId);
+  }, [activePair, consumePendingSeekRequest, pendingSeekRequest]);
 
   const handleMapSeek = useCallback((timeSec: number) => {
     setCurrentTimeSec(timeSec);

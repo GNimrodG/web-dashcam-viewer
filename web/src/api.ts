@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { ClipChannelMode, PipCorner } from "./utils/clip-layout";
 
 const api = axios.create({
   baseURL: "/api",
@@ -248,14 +249,18 @@ export async function createClip(
   pairId: string,
   startTime: number,
   endTime: number,
-  channels: "front" | "rear" | "both-stacked" | "both-side-by-side",
-  audioVolume?: number,
+  channels: ClipChannelMode,
+  options: {
+    audioVolume?: number;
+    pipSizePercent?: number;
+    pipCorner?: PipCorner;
+  } = {},
 ): Promise<{ jobId: string; statusUrl: string }> {
   const { data } = await api.post(`/videos/${pairId}/clip`, {
     startTime,
     endTime,
     channels,
-    audioVolume,
+    ...options,
   });
   return data;
 }

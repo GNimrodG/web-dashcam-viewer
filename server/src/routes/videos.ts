@@ -17,7 +17,15 @@ import {
   updatePairStartTime,
   updatePairTimeZone,
 } from "../services/indexer.js";
-import { createClip } from "../services/clipper.js";
+import {
+  createClip,
+  isPictureInPictureMode,
+  MAX_PIP_SIZE_PERCENT,
+  MIN_PIP_SIZE_PERCENT,
+  requiresBothChannels,
+  type ClipChannelMode,
+  type PipCorner,
+} from "../services/clipper.js";
 import { getClipJob, startClipJob } from "../services/clip-jobs.js";
 import { generateGPX } from "../services/gpx.js";
 import { saveRecordedGpxTrack } from "../services/gps.js";
@@ -806,18 +814,35 @@ router.post("/:id/clip", async (req, res) => {
     const pair = getVideoPairById(req.params.id);
     if (!pair) return res.status(404).json({ error: "Video pair not found" });
 
-    const { startTime, endTime, channels, audioVolume } = req.body as {
+    const {
+      startTime,
+      endTime,
+      channels,
+      audioVolume,
+      pipSizePercent,
+      pipCorner,
+    } = req.body as {
       startTime: number;
       endTime: number;
-      channels: "front" | "rear" | "both-stacked" | "both-side-by-side";
+      channels: ClipChannelMode;
       audioVolume?: number;
+      pipSizePercent?: number;
+      pipCorner?: PipCorner;
     };
 
-    const validChannels = [
+    const validChannels: ClipChannelMode[] = [
       "front",
       "rear",
       "both-stacked",
       "both-side-by-side",
+      "front-pip-rear",
+      "rear-pip-front",
+    ];
+    const validPipCorners: PipCorner[] = [
+      "top-left",
+      "top-right",
+      "bottom-left",
+      "bottom-right",
     ];
     if (
       !Number.isFinite(startTime) ||
@@ -827,7 +852,14 @@ router.post("/:id/clip", async (req, res) => {
       endTime > (pair.durationSec || Number.POSITIVE_INFINITY) ||
       !validChannels.includes(channels) ||
       (audioVolume !== undefined &&
-        (!Number.isFinite(audioVolume) || audioVolume < 0 || audioVolume > 1))
+        (!Number.isFinite(audioVolume) ||
+          audioVolume < 0 ||
+          audioVolume > 1)) ||
+      (pipSizePercent !== undefined &&
+        (!Number.isFinite(pipSizePercent) ||
+          pipSizePercent < MIN_PIP_SIZE_PERCENT ||
+          pipSizePercent > MAX_PIP_SIZE_PERCENT)) ||
+      (pipCorner !== undefined && !validPipCorners.includes(pipCorner))
     ) {
       return res.status(400).json({ error: "Invalid clip options" });
     }
@@ -842,10 +874,7 @@ router.post("/:id/clip", async (req, res) => {
     if (channels === "rear" && !rearPath) {
       return res.status(400).json({ error: "Rear channel not available" });
     }
-    if (
-      (channels === "both-stacked" || channels === "both-side-by-side") &&
-      (!frontPath || !rearPath)
-    ) {
+    if (requiresBothChannels(channels) && (!frontPath || !rearPath)) {
       return res.status(400).json({ error: "Both channels not available" });
     }
 
@@ -867,6 +896,9 @@ router.post("/:id/clip", async (req, res) => {
         channels,
         outputPath,
         audioVolume,
+        ...(isPictureInPictureMode(channels)
+          ? { pipSizePercent, pipCorner }
+          : {}),
         onProgress,
       });
 

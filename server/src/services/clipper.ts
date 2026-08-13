@@ -11,12 +11,87 @@ export interface ClipProgress {
   phase: "encoding" | "finalizing" | "completed";
 }
 
+export type ClipChannelMode =
+  | "front"
+  | "rear"
+  | "both-stacked"
+  | "both-side-by-side"
+  | "front-pip-rear"
+  | "rear-pip-front";
+
+export type PipCorner =
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right";
+
+export const DEFAULT_PIP_SIZE_PERCENT = 30;
+export const MIN_PIP_SIZE_PERCENT = 10;
+export const MAX_PIP_SIZE_PERCENT = 50;
+export const DEFAULT_PIP_CORNER: PipCorner = "bottom-right";
+const PIP_MARGIN_RATIO = 0.02;
+
+export function isPictureInPictureMode(
+  channels: ClipChannelMode,
+): channels is "front-pip-rear" | "rear-pip-front" {
+  return channels === "front-pip-rear" || channels === "rear-pip-front";
+}
+
+export function requiresBothChannels(channels: ClipChannelMode): boolean {
+  return (
+    channels === "both-stacked" ||
+    channels === "both-side-by-side" ||
+    isPictureInPictureMode(channels)
+  );
+}
+
+function formatFilterNumber(value: number): string {
+  return Number(value.toFixed(4)).toString();
+}
+
+export function buildPictureInPictureFilter(options: {
+  channels: "front-pip-rear" | "rear-pip-front";
+  pipSizePercent?: number;
+  pipCorner?: PipCorner;
+}): string {
+  const {
+    channels,
+    pipSizePercent = DEFAULT_PIP_SIZE_PERCENT,
+    pipCorner = DEFAULT_PIP_CORNER,
+  } = options;
+  const mainInput = channels === "front-pip-rear" ? 0 : 1;
+  const smallInput = mainInput === 0 ? 1 : 0;
+  const sizeRatio = formatFilterNumber(pipSizePercent / 100);
+  const marginRatio = formatFilterNumber(PIP_MARGIN_RATIO);
+  const margin = `trunc(main_w*${marginRatio})`;
+  const x = pipCorner.endsWith("right") ? `main_w-overlay_w-${margin}` : margin;
+  const y = pipCorner.startsWith("bottom")
+    ? `main_h-overlay_h-${margin}`
+    : margin;
+
+  return `[${smallInput}:v][${mainInput}:v]scale2ref=w=trunc(main_w*${sizeRatio}/2)*2:h=-2[pip][base];[base][pip]overlay=x=${x}:y=${y}:shortest=1[v]`;
+}
+
+function addOptionalAudioMap(
+  args: string[],
+  inputIndex: number,
+  audioVolume: number,
+): void {
+  if (audioVolume <= 0) return;
+  args.push("-map", `${inputIndex}:a?`);
+  if (audioVolume !== 1) {
+    args.push("-filter:a", `volume=${audioVolume}`);
+  }
+}
+
 export interface ClipOptions {
   startTime: number; // seconds
   endTime: number; // seconds
-  channels: "front" | "rear" | "both-stacked" | "both-side-by-side";
+  channels: ClipChannelMode;
   outputPath: string;
   audioVolume?: number; // 0-1 (0 = mute, 0.5 = half, 1 = original)
+  pipSizePercent?: number;
+  pipCorner?: PipCorner;
   onProgress?: (progress: ClipProgress) => void;
 }
 
@@ -58,6 +133,8 @@ export async function createClip(
     channels,
     outputPath,
     audioVolume = 1,
+    pipSizePercent = DEFAULT_PIP_SIZE_PERCENT,
+    pipCorner = DEFAULT_PIP_CORNER,
     onProgress,
   } = options;
   const duration = endTime - startTime;
@@ -88,11 +165,7 @@ export async function createClip(
       "-i",
       rearPath,
     );
-  } else if (
-    (channels === "both-stacked" || channels === "both-side-by-side") &&
-    frontPath &&
-    rearPath
-  ) {
+  } else if (requiresBothChannels(channels) && frontPath && rearPath) {
     // Both channels
     args.push(
       "-ss",
@@ -115,39 +188,32 @@ export async function createClip(
   // Filter complex for combining videos
   if (channels === "both-stacked") {
     // Stack vertically: scale both to same width, preserve aspect ratio
-    const volumeFilter =
-      audioVolume === 0 ? "" : `;[0:a?]volume=${audioVolume}[a]`;
-    const filterComplex = `[0:v]scale=1920:-2[v0];[1:v]scale=1920:-2[v1];[v0][v1]vstack=inputs=2[v]${volumeFilter}`;
+    const filterComplex = `[0:v]scale=1920:-2[v0];[1:v]scale=1920:-2[v1];[v0][v1]vstack=inputs=2[v]`;
 
     args.push("-filter_complex", filterComplex, "-map", "[v]");
-
-    if (audioVolume > 0) {
-      args.push("-map", "[a]");
-    }
+    addOptionalAudioMap(args, 0, audioVolume);
   } else if (channels === "both-side-by-side") {
     // Side by side: scale both to same height, preserve aspect ratio
-    const volumeFilter =
-      audioVolume === 0 ? "" : `;[0:a?]volume=${audioVolume}[a]`;
-    const filterComplex = `[0:v]scale=-2:1080[v0];[1:v]scale=-2:1080[v1];[v0][v1]hstack=inputs=2[v]${volumeFilter}`;
+    const filterComplex = `[0:v]scale=-2:1080[v0];[1:v]scale=-2:1080[v1];[v0][v1]hstack=inputs=2[v]`;
 
     args.push("-filter_complex", filterComplex, "-map", "[v]");
-
-    if (audioVolume > 0) {
-      args.push("-map", "[a]");
-    }
+    addOptionalAudioMap(args, 0, audioVolume);
+  } else if (isPictureInPictureMode(channels)) {
+    const filterComplex = buildPictureInPictureFilter({
+      channels,
+      pipSizePercent,
+      pipCorner,
+    });
+    args.push("-filter_complex", filterComplex, "-map", "[v]");
+    addOptionalAudioMap(
+      args,
+      channels === "front-pip-rear" ? 0 : 1,
+      audioVolume,
+    );
   } else {
     // Single channel - map video and optionally audio with volume
     args.push("-map", "0:v");
-
-    if (audioVolume === 0) {
-      // No audio
-    } else if (audioVolume === 1) {
-      // Original audio
-      args.push("-map", "0:a?");
-    } else {
-      // Adjusted volume
-      args.push("-filter:a", `volume=${audioVolume}`, "-map", "0:a?");
-    }
+    addOptionalAudioMap(args, 0, audioVolume);
   }
 
   // Output settings
