@@ -239,11 +239,12 @@ export default function MapView({
       const position = interpolateGpsPosition(points, poi.timeSec);
       if (!position) continue;
 
+      const automatic = poi.kind === "camera-save";
       const marker = L.circleMarker([position.lat, position.lon], {
         radius: 8,
-        color: "#7c2d12",
+        color: automatic ? "#7f1d1d" : "#7c2d12",
         weight: 2,
-        fillColor: "#f97316",
+        fillColor: automatic ? "#dc2626" : "#f97316",
         fillOpacity: 1,
         interactive: !!onSeek,
         bubblingMouseEvents: false,

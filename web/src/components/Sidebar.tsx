@@ -114,6 +114,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
     useState<VideoPair | null>(null);
   const navigate = useNavigate();
   const selectedItemRef = useRef<HTMLLIElement | null>(null);
+  const lastAutoScrolledPairIdRef = useRef<string | undefined>(undefined);
   const bulkGpxInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -125,12 +126,23 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
 
   // Scroll to selected item when sidebar loads or selection changes
   useEffect(() => {
-    if (selectedPairId && selectedItemRef.current) {
-      selectedItemRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
+    if (!selectedPairId) {
+      lastAutoScrolledPairIdRef.current = undefined;
+      return;
     }
+
+    if (
+      lastAutoScrolledPairIdRef.current === selectedPairId ||
+      !selectedItemRef.current
+    ) {
+      return;
+    }
+
+    selectedItemRef.current.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+    lastAutoScrolledPairIdRef.current = selectedPairId;
   }, [selectedPairId, pairs]);
 
   // Listen for GPS data updates to refresh affected pairs
@@ -170,6 +182,28 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
     globalThis.addEventListener("video-pois-updated", handlePoisUpdated);
     return () =>
       globalThis.removeEventListener("video-pois-updated", handlePoisUpdated);
+  }, [updatePair]);
+
+  useEffect(() => {
+    const handleMetadataUpdated = async (event: Event) => {
+      const { pairId } = (event as CustomEvent<{ pairId: string }>).detail;
+      try {
+        const updatedPair = await fetchPair(pairId);
+        if (updatedPair) updatePair(updatedPair);
+      } catch (err) {
+        console.error("Failed to update recording metadata:", err);
+      }
+    };
+
+    globalThis.addEventListener(
+      "recording-overlay-metadata-updated",
+      handleMetadataUpdated,
+    );
+    return () =>
+      globalThis.removeEventListener(
+        "recording-overlay-metadata-updated",
+        handleMetadataUpdated,
+      );
   }, [updatePair]);
 
   const handleReindex = async () => {

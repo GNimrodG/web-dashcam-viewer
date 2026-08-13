@@ -24,6 +24,7 @@ import { initDatabase, closeDatabase } from "./db/database.js";
 import { initOIDC, requireAuth, optionalAuth } from "./middleware/auth.js";
 import { cleanupOrphanedThumbnails } from "./services/thumbnail.js";
 import { startOverlayMetadataScanner } from "./services/overlay-metadata.js";
+import { startAudioEventScanner } from "./services/audio-events.js";
 
 logger.info("Starting server...");
 
@@ -144,4 +145,5 @@ app.listen(config.PORT, () => {
   startOverlayMetadataScanner(() => getVideoPairs()).catch((error) => {
     logger.warn({ error }, "Failed to start recording overlay scanner");
   });
+  startAudioEventScanner(() => getVideoPairs());
 });

@@ -19,6 +19,15 @@ export interface VideoPoi {
   timeSec: number;
   label: string;
   createdAt: number;
+  kind?: "manual" | "camera-save";
+}
+
+export interface RecordingAudioScan {
+  videoId: string;
+  sourceSignature: string;
+  detectorVersion: number;
+  status: "scanned" | "no-audio" | "failed";
+  scannedAt: number;
 }
 
 export interface RecordingOverlayMetadata {
@@ -39,17 +48,41 @@ type RecordingOverlayMetadataRow = Omit<
 > & {
   cameraType: string | null;
   licensePlate: string | null;
+  cameraTypeOverride: string | null;
+  licensePlateOverride: string | null;
+  metadataOverridden: number;
   frameTimeSec: number | null;
 };
 
 function mapRecordingOverlayMetadataRow(
   row: RecordingOverlayMetadataRow,
 ): RecordingOverlayMetadata {
+  const {
+    cameraType,
+    licensePlate,
+    cameraTypeOverride,
+    licensePlateOverride,
+    metadataOverridden,
+    frameTimeSec,
+    ...metadata
+  } = row;
+  const effectiveCameraType = metadataOverridden
+    ? cameraTypeOverride
+    : cameraType;
+  const effectiveLicensePlate = metadataOverridden
+    ? licensePlateOverride
+    : licensePlate;
+
   return {
-    ...row,
-    cameraType: row.cameraType ?? undefined,
-    licensePlate: row.licensePlate ?? undefined,
-    frameTimeSec: row.frameTimeSec ?? undefined,
+    ...metadata,
+    cameraType: effectiveCameraType || undefined,
+    licensePlate: effectiveLicensePlate || undefined,
+    status: metadataOverridden
+      ? effectiveCameraType || effectiveLicensePlate
+        ? "found"
+        : "not-found"
+      : metadata.status,
+    frameTimeSec: frameTimeSec ?? undefined,
   };
 }
 
@@ -99,6 +132,32 @@ export function initDatabase(mediaDir: string) {
   `);
 
     db.exec(`
+    CREATE TABLE IF NOT EXISTS recording_audio_events (
+      id TEXT PRIMARY KEY,
+      video_id TEXT NOT NULL,
+      time_sec REAL NOT NULL,
+      event_type TEXT NOT NULL,
+      label TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `);
+
+    db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_recording_audio_events_video_time
+    ON recording_audio_events(video_id, time_sec)
+  `);
+
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS recording_audio_scans (
+      video_id TEXT PRIMARY KEY,
+      source_signature TEXT NOT NULL,
+      detector_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      scanned_at INTEGER NOT NULL
+    )
+  `);
+
+    db.exec(`
     CREATE TABLE IF NOT EXISTS recording_time_zones (
       video_id TEXT PRIMARY KEY,
       time_zone TEXT NOT NULL
@@ -122,9 +181,35 @@ export function initDatabase(mediaDir: string) {
       extractor_version INTEGER NOT NULL,
       status TEXT NOT NULL,
       scanned_at INTEGER NOT NULL,
-      frame_time_sec REAL
+      frame_time_sec REAL,
+      camera_type_override TEXT,
+      license_plate_override TEXT,
+      metadata_overridden INTEGER NOT NULL DEFAULT 0
     )
   `);
+
+    const overlayMetadataColumns = new Set(
+      (
+        db.prepare("PRAGMA table_info(recording_overlay_metadata)").all() as {
+          name: string;
+        }[]
+      ).map((column) => column.name),
+    );
+    if (!overlayMetadataColumns.has("camera_type_override")) {
+      db.exec(
+        "ALTER TABLE recording_overlay_metadata ADD COLUMN camera_type_override TEXT",
+      );
+    }
+    if (!overlayMetadataColumns.has("license_plate_override")) {
+      db.exec(
+        "ALTER TABLE recording_overlay_metadata ADD COLUMN license_plate_override TEXT",
+      );
+    }
+    if (!overlayMetadataColumns.has("metadata_overridden")) {
+      db.exec(
+        "ALTER TABLE recording_overlay_metadata ADD COLUMN metadata_overridden INTEGER NOT NULL DEFAULT 0",
+      );
+    }
 
     // Clean up expired tokens on startup
     cleanExpiredTokens();
@@ -223,7 +308,7 @@ export function createVideoPoi(poi: VideoPoi): void {
 }
 
 export function getVideoPois(videoId: string): VideoPoi[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT
          id,
@@ -236,12 +321,79 @@ export function getVideoPois(videoId: string): VideoPoi[] {
        ORDER BY time_sec ASC, created_at ASC`,
     )
     .all(videoId) as VideoPoi[];
+  return rows.map((poi) => ({ ...poi, kind: "manual" }));
+}
+
+export function getAllVideoPois(videoId: string): VideoPoi[] {
+  return db
+    .prepare(
+      `SELECT
+         id,
+         video_id as videoId,
+         time_sec as timeSec,
+         label,
+         created_at as createdAt,
+         'manual' as kind
+       FROM video_pois
+       WHERE video_id = ?
+       UNION ALL
+       SELECT
+         id,
+         video_id as videoId,
+         time_sec as timeSec,
+         label,
+         created_at as createdAt,
+         event_type as kind
+       FROM recording_audio_events
+       WHERE video_id = ?
+       ORDER BY timeSec ASC, createdAt ASC`,
+    )
+    .all(videoId, videoId) as VideoPoi[];
+}
+
+export function getAllVideoPoisMap(): Map<string, VideoPoi[]> {
+  const rows = db
+    .prepare(
+      `SELECT
+         id,
+         video_id as videoId,
+         time_sec as timeSec,
+         label,
+         created_at as createdAt,
+         'manual' as kind
+       FROM video_pois
+       UNION ALL
+       SELECT
+         id,
+         video_id as videoId,
+         time_sec as timeSec,
+         label,
+         created_at as createdAt,
+         event_type as kind
+       FROM recording_audio_events
+       ORDER BY videoId ASC, timeSec ASC, createdAt ASC`,
+    )
+    .all() as VideoPoi[];
+  const result = new Map<string, VideoPoi[]>();
+  for (const poi of rows) {
+    const pois = result.get(poi.videoId) ?? [];
+    pois.push(poi);
+    result.set(poi.videoId, pois);
+  }
+  return result;
 }
 
 export function getVideoPoiCount(videoId: string): number {
   const row = db
-    .prepare("SELECT COUNT(*) as count FROM video_pois WHERE video_id = ?")
-    .get(videoId) as { count: number };
+    .prepare(
+      `SELECT COUNT(*) as count
+       FROM (
+         SELECT video_id FROM video_pois WHERE video_id = ?
+         UNION ALL
+         SELECT video_id FROM recording_audio_events WHERE video_id = ?
+       )`,
+    )
+    .get(videoId, videoId) as { count: number };
   return row.count;
 }
 
@@ -249,11 +401,74 @@ export function getVideoPoiCounts(): Map<string, number> {
   const rows = db
     .prepare(
       `SELECT video_id as videoId, COUNT(*) as count
-       FROM video_pois
+       FROM (
+         SELECT video_id FROM video_pois
+         UNION ALL
+         SELECT video_id FROM recording_audio_events
+       )
        GROUP BY video_id`,
     )
     .all() as Array<{ videoId: string; count: number }>;
   return new Map(rows.map((row) => [row.videoId, row.count]));
+}
+
+export function getRecordingAudioScan(
+  videoId: string,
+): RecordingAudioScan | undefined {
+  return db
+    .prepare(
+      `SELECT
+         video_id as videoId,
+         source_signature as sourceSignature,
+         detector_version as detectorVersion,
+         status,
+         scanned_at as scannedAt
+       FROM recording_audio_scans
+       WHERE video_id = ?`,
+    )
+    .get(videoId) as RecordingAudioScan | undefined;
+}
+
+export function replaceRecordingAudioEvents(
+  scan: RecordingAudioScan,
+  events: readonly VideoPoi[],
+): void {
+  db.transaction(() => {
+    db.prepare("DELETE FROM recording_audio_events WHERE video_id = ?").run(
+      scan.videoId,
+    );
+    const insertEvent = db.prepare(
+      `INSERT INTO recording_audio_events
+         (id, video_id, time_sec, event_type, label, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    for (const event of events) {
+      insertEvent.run(
+        event.id,
+        scan.videoId,
+        event.timeSec,
+        event.kind ?? "camera-save",
+        event.label,
+        event.createdAt,
+      );
+    }
+    db.prepare(
+      `INSERT INTO recording_audio_scans
+         (video_id, source_signature, detector_version, status, scanned_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(video_id) DO UPDATE SET
+         source_signature = excluded.source_signature,
+         detector_version = excluded.detector_version,
+         status = excluded.status,
+         scanned_at = excluded.scanned_at`,
+    ).run(
+      scan.videoId,
+      scan.sourceSignature,
+      scan.detectorVersion,
+      scan.status,
+      scan.scannedAt,
+    );
+  })();
 }
 
 export function setRecordingTimeZone(videoId: string, timeZone: string): void {
@@ -332,6 +547,9 @@ export function getRecordingOverlayMetadata(
          video_id as videoId,
          camera_type as cameraType,
          license_plate as licensePlate,
+         camera_type_override as cameraTypeOverride,
+         license_plate_override as licensePlateOverride,
+         metadata_overridden as metadataOverridden,
          source_path as sourcePath,
          source_mtime_ms as sourceMtimeMs,
          extractor_version as extractorVersion,
@@ -355,6 +573,9 @@ export function getRecordingOverlayMetadataMap(): Map<
          video_id as videoId,
          camera_type as cameraType,
          license_plate as licensePlate,
+         camera_type_override as cameraTypeOverride,
+         license_plate_override as licensePlateOverride,
+         metadata_overridden as metadataOverridden,
          source_path as sourcePath,
          source_mtime_ms as sourceMtimeMs,
          extractor_version as extractorVersion,
@@ -371,7 +592,7 @@ export function getRecordingOverlayMetadataMap(): Map<
 
 export function upsertRecordingOverlayMetadata(
   metadata: RecordingOverlayMetadata,
-): void {
+): RecordingOverlayMetadata {
   db.prepare(
     `INSERT INTO recording_overlay_metadata
        (video_id, camera_type, license_plate, source_path, source_mtime_ms,
@@ -397,6 +618,44 @@ export function upsertRecordingOverlayMetadata(
     metadata.scannedAt,
     metadata.frameTimeSec ?? null,
   );
+  return getRecordingOverlayMetadata(metadata.videoId)!;
+}
+
+export function setRecordingOverlayMetadataCorrection(input: {
+  videoId: string;
+  cameraType?: string;
+  licensePlate?: string;
+  sourcePath: string;
+  sourceMtimeMs: number;
+  extractorVersion: number;
+}): RecordingOverlayMetadata {
+  const correctedCameraType = input.cameraType || null;
+  const correctedLicensePlate = input.licensePlate || null;
+  const status =
+    correctedCameraType || correctedLicensePlate ? "found" : "not-found";
+
+  db.prepare(
+    `INSERT INTO recording_overlay_metadata
+       (video_id, camera_type, license_plate, source_path, source_mtime_ms,
+        extractor_version, status, scanned_at, frame_time_sec,
+        camera_type_override, license_plate_override, metadata_overridden)
+     VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+     ON CONFLICT(video_id) DO UPDATE SET
+       camera_type_override = excluded.camera_type_override,
+       license_plate_override = excluded.license_plate_override,
+       metadata_overridden = 1`,
+  ).run(
+    input.videoId,
+    input.sourcePath,
+    input.sourceMtimeMs,
+    input.extractorVersion,
+    status,
+    Date.now(),
+    correctedCameraType,
+    correctedLicensePlate,
+  );
+
+  return getRecordingOverlayMetadata(input.videoId)!;
 }
 
 export function deleteVideoPoi(videoId: string, poiId: string): boolean {

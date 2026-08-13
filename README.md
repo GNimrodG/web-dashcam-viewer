@@ -12,6 +12,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - **HTTP range streaming** for efficient video delivery
 - **Cross-platform path handling** (Windows/Linux compatible)
 - **Camera and license plate OCR** from the recording's on-video overlay
+- **Automatic recording-save detection** from the camera's audio beep pattern
 
 ### GPS & Location
 
@@ -21,6 +22,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - **Manual location editing** with autocomplete
 - **GPX export** for GPS tracks
 - **Interactive map view** (Leaflet) with route playback
+- **Manual and detected POI markers** on individual and all-recordings maps
 
 ### Video Playback
 
@@ -167,6 +169,8 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `GPS_CONCURRENT_LIMIT` - Parallel GPS extractions (default: `5`)
 - `OVERLAY_OCR_CONCURRENCY` - Parallel camera/plate OCR scans (default: `1`)
 - `OVERLAY_OCR_ENABLED` - Set to `0` to disable camera/plate OCR (default: enabled)
+- `AUDIO_EVENT_CONCURRENCY` - Parallel background camera-save beep scans (default: `1`)
+- `AUDIO_EVENT_DETECTION_ENABLED` - Set to `0` to disable automatic camera-save beep detection (default: enabled)
 - `IND Reference
 
 ### Videos

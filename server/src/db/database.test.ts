@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +12,9 @@ import {
   getVideoPoiCount,
   getVideoPoiCounts,
   getVideoPois,
+  getAllVideoPois,
+  getAllVideoPoisMap,
+  getRecordingAudioScan,
   getRecordingTimeZone,
   getRecordingTimeZones,
   getRecordingStartTime,
@@ -18,9 +22,11 @@ import {
   getRecordingOverlayMetadata,
   getRecordingOverlayMetadataMap,
   initDatabase,
+  setRecordingOverlayMetadataCorrection,
   setRecordingTimeZone,
   setRecordingStartTime,
   upsertRecordingOverlayMetadata,
+  replaceRecordingAudioEvents,
 } from "./database";
 
 test("persists, orders, and deletes video POIs within their recording", () => {
@@ -58,6 +64,44 @@ test("persists, orders, and deletes video POIs within their recording", () => {
     );
     assert.equal(getVideoPoiCount("recording-a"), 1);
 
+    replaceRecordingAudioEvents(
+      {
+        videoId: "recording-a",
+        sourceSignature: "source-v1",
+        detectorVersion: 1,
+        status: "scanned",
+        scannedAt: 100,
+      },
+      [
+        {
+          id: "automatic-save",
+          videoId: "recording-a",
+          timeSec: 254.465,
+          label: "Recording saved",
+          kind: "camera-save",
+          createdAt: 100,
+        },
+      ],
+    );
+    assert.deepEqual(getRecordingAudioScan("recording-a"), {
+      videoId: "recording-a",
+      sourceSignature: "source-v1",
+      detectorVersion: 1,
+      status: "scanned",
+      scannedAt: 100,
+    });
+    assert.deepEqual(
+      getAllVideoPois("recording-a").map((poi) => [poi.id, poi.kind]),
+      [
+        ["later", "manual"],
+        ["automatic-save", "camera-save"],
+      ],
+    );
+    assert.equal(getAllVideoPoisMap().get("recording-a")?.length, 2);
+    assert.equal(getVideoPoiCount("recording-a"), 2);
+    assert.deepEqual([...getVideoPoiCounts()], [["recording-a", 2]]);
+    assert.equal(deleteVideoPoi("recording-a", "automatic-save"), false);
+
     assert.equal(getRecordingTimeZone("recording-a"), undefined);
     setRecordingTimeZone("recording-a", "Europe/Berlin");
     setRecordingTimeZone("recording-b", "Etc/GMT-2");
@@ -76,6 +120,7 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       getRecordingStartTime("recording-a"),
       "2026-05-09T16:54:00.000Z",
     );
+    assert.equal(getAllVideoPois("recording-a").at(-1)?.kind, "camera-save");
     assert.deepEqual([...getRecordingStartTimes()].sort(), [
       ["recording-a", "2026-05-09T16:54:00.000Z"],
       ["recording-b", "2026-05-09T17:00:00.000Z"],
@@ -108,12 +153,96 @@ test("persists, orders, and deletes video POIs within their recording", () => {
     });
     assert.equal(getRecordingOverlayMetadataMap().size, 1);
 
+    setRecordingOverlayMetadataCorrection({
+      videoId: "recording-a",
+      cameraType: "Corrected camera",
+      licensePlate: "MANUAL",
+      sourcePath: "RO/recording-a.mp4",
+      sourceMtimeMs: 1234,
+      extractorVersion: 1,
+    });
+    upsertRecordingOverlayMetadata({
+      videoId: "recording-a",
+      cameraType: "Different OCR camera",
+      licensePlate: "OCRVALUE",
+      sourcePath: "RO/recording-a.mp4",
+      sourceMtimeMs: 2345,
+      extractorVersion: 2,
+      status: "found",
+      scannedAt: 6789,
+      frameTimeSec: 60,
+    });
+    assert.deepEqual(getRecordingOverlayMetadata("recording-a"), {
+      videoId: "recording-a",
+      cameraType: "Corrected camera",
+      licensePlate: "MANUAL",
+      sourcePath: "RO/recording-a.mp4",
+      sourceMtimeMs: 2345,
+      extractorVersion: 2,
+      status: "found",
+      scannedAt: 6789,
+      frameTimeSec: 60,
+    });
+
     closeDatabase();
     initDatabase(mediaDir);
     assert.equal(getRecordingTimeZone("recording-a"), "Europe/Budapest");
     assert.equal(
       getRecordingStartTime("recording-a"),
       "2026-05-09T16:54:00.000Z",
+    );
+    assert.equal(
+      getRecordingOverlayMetadata("recording-a")?.cameraType,
+      "Corrected camera",
+    );
+    assert.equal(
+      getRecordingOverlayMetadata("recording-a")?.licensePlate,
+      "MANUAL",
+    );
+  } finally {
+    closeDatabase();
+    rmSync(mediaDir, { recursive: true, force: true });
+  }
+});
+
+test("migrates existing overlay metadata before saving corrections", () => {
+  const mediaDir = mkdtempSync(path.join(tmpdir(), "dashcam-viewer-ocr-"));
+  const legacyDatabase = new Database(
+    path.join(mediaDir, ".dashcam-viewer.db"),
+  );
+  legacyDatabase.exec(`
+    CREATE TABLE recording_overlay_metadata (
+      video_id TEXT PRIMARY KEY,
+      camera_type TEXT,
+      license_plate TEXT,
+      source_path TEXT NOT NULL,
+      source_mtime_ms REAL NOT NULL,
+      extractor_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      scanned_at INTEGER NOT NULL,
+      frame_time_sec REAL
+    );
+    INSERT INTO recording_overlay_metadata VALUES
+      ('recording-a', 'Legacy camera', NULL, 'recording-a.mp4', 100, 1, 'found', 200, 0);
+  `);
+  legacyDatabase.close();
+
+  initDatabase(mediaDir);
+  try {
+    assert.equal(
+      getRecordingOverlayMetadata("recording-a")?.cameraType,
+      "Legacy camera",
+    );
+    setRecordingOverlayMetadataCorrection({
+      videoId: "recording-a",
+      cameraType: "Corrected camera",
+      sourcePath: "recording-a.mp4",
+      sourceMtimeMs: 100,
+      extractorVersion: 1,
+    });
+    assert.equal(
+      getRecordingOverlayMetadata("recording-a")?.cameraType,
+      "Corrected camera",
     );
   } finally {
     closeDatabase();

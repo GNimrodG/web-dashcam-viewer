@@ -17,7 +17,12 @@ export function useVideoPois(videoId: string | null) {
     const controller = new AbortController();
     setLoading(true);
     fetchVideoPois(videoId, controller.signal)
-      .then(setPois)
+      .then((loadedPois) => {
+        setPois(loadedPois);
+        globalThis.dispatchEvent(
+          new CustomEvent("video-pois-updated", { detail: { videoId } }),
+        );
+      })
       .catch((error) => {
         if (!controller.signal.aborted) {
           console.error("Failed to load video POIs", error);

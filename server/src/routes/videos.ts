@@ -8,6 +8,7 @@ import {
   buildIndex,
   getGpsExtractionQueueStatus,
   updatePairLocation,
+  updatePairOverlayMetadata,
   getAllUniqueLocations,
   registerStoredGpsForPair,
   deleteGpsForPair,
@@ -38,15 +39,16 @@ import {
 import {
   createVideoPoi,
   deleteVideoPoi,
+  getAllVideoPois,
   getVideoPoiCount,
   getVideoPoiCounts,
-  getVideoPois,
   getRecordingTimeZone,
   getRecordingTimeZones,
   deleteRecordingStartTime,
   setRecordingStartTime,
   setRecordingTimeZone,
 } from "../db/database.js";
+import { ensureRecordingAudioEvents } from "../services/audio-events.js";
 import { randomUUID } from "node:crypto";
 import { IANAZone } from "luxon";
 import { parseDashcamPairIdTimeIso } from "../utils/dashcam-time.js";
@@ -109,6 +111,38 @@ router.patch("/:id/location", (req, res) => {
 
   const updatedPair = getVideoPairById(id);
   res.json(updatedPair ? serializePair(updatedPair) : updatedPair);
+});
+
+router.patch("/:id/overlay-metadata", (req, res) => {
+  const { cameraType, licensePlate } = req.body ?? {};
+  if (typeof cameraType !== "string" || typeof licensePlate !== "string") {
+    return res.status(400).json({
+      error: "Camera type and vehicle license plate must both be strings",
+    });
+  }
+
+  const correctedCameraType = cameraType.replaceAll(/\s+/g, " ").trim();
+  const correctedLicensePlate = licensePlate.replaceAll(/\s+/g, " ").trim();
+  if (correctedCameraType.length > 100) {
+    return res
+      .status(400)
+      .json({ error: "Camera type must be at most 100 characters" });
+  }
+  if (correctedLicensePlate.length > 40) {
+    return res.status(400).json({
+      error: "Vehicle license plate must be at most 40 characters",
+    });
+  }
+
+  const updatedPair = updatePairOverlayMetadata(
+    req.params.id,
+    correctedCameraType || undefined,
+    correctedLicensePlate || undefined,
+  );
+  if (!updatedPair) {
+    return res.status(404).json({ error: "Video pair not found" });
+  }
+  res.json(serializePair(updatedPair));
 });
 
 // Get GPS extraction queue status (Server-Sent Events)
@@ -186,10 +220,15 @@ router.get("/gps-map", async (_req, res) => {
   }
 });
 
-router.get("/:id/pois", (req, res) => {
+router.get("/:id/pois", async (req, res) => {
   const pair = getVideoPairById(req.params.id);
   if (!pair) return res.status(404).json({ error: "Video pair not found" });
-  res.json(getVideoPois(pair.id));
+  try {
+    await ensureRecordingAudioEvents(pair);
+  } catch {
+    // Manual POIs remain available when audio analysis fails.
+  }
+  res.json(getAllVideoPois(pair.id));
 });
 
 router.post("/:id/pois", (req, res) => {
@@ -219,6 +258,7 @@ router.post("/:id/pois", (req, res) => {
     timeSec,
     label,
     createdAt: Date.now(),
+    kind: "manual" as const,
   };
   createVideoPoi(poi);
   res.status(201).json(poi);

@@ -62,6 +62,7 @@ export default function MainPage() {
         poisLoading={poisLoading}
         onCreatePoi={addPoi}
         onDeletePoi={removePoi}
+        onPairUpdated={setActivePair}
       />
       <MapView
         pair={activePair}

@@ -88,6 +88,7 @@ export interface VideoPoi {
   timeSec: number;
   label: string;
   createdAt: number;
+  kind?: "manual" | "camera-save";
 }
 
 export interface GpsMapTrack {
@@ -97,6 +98,7 @@ export interface GpsMapTrack {
   startLocationName?: string;
   endLocationName?: string;
   points: Array<Pick<GPSPoint, "tsSec" | "lat" | "lon">>;
+  pois: VideoPoi[];
 }
 
 export interface GpsMapCatalog {
@@ -424,5 +426,13 @@ export async function updatePairLocation(
   },
 ): Promise<VideoPair> {
   const { data } = await api.patch(`/videos/${id}/location`, location);
+  return data;
+}
+
+export async function updatePairOverlayMetadata(
+  id: string,
+  metadata: { cameraType: string; licensePlate: string },
+): Promise<VideoPair> {
+  const { data } = await api.patch(`/videos/${id}/overlay-metadata`, metadata);
   return data;
 }

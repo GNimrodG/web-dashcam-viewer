@@ -29,7 +29,9 @@ import {
   getRecordingStartTimes,
   getRecordingTimeZone,
   getRecordingTimeZones,
+  setRecordingOverlayMetadataCorrection,
 } from "../db/database.js";
+import { OVERLAY_METADATA_EXTRACTOR_VERSION } from "./overlay-metadata.js";
 import {
   canonicalMediaPath,
   compareMediaPathPriority,
@@ -599,6 +601,31 @@ export function getVideoPairs(): VideoPair[] {
 
 export function getVideoPairById(id: string): VideoPair | undefined {
   return INDEX.get(id);
+}
+
+export function updatePairOverlayMetadata(
+  id: string,
+  cameraType?: string,
+  licensePlate?: string,
+): VideoPair | undefined {
+  const pair = INDEX.get(id);
+  if (!pair) return undefined;
+  const source = pair.channels.front || pair.channels.rear;
+  if (!source) return undefined;
+
+  const metadata = setRecordingOverlayMetadataCorrection({
+    videoId: id,
+    cameraType,
+    licensePlate,
+    sourcePath: source.path,
+    sourceMtimeMs: source.mtimeMs ?? 0,
+    extractorVersion: OVERLAY_METADATA_EXTRACTOR_VERSION,
+  });
+  pair.cameraType = metadata.cameraType;
+  pair.licensePlate = metadata.licensePlate;
+  pair.overlayMetadataStatus = metadata.status;
+  scheduleSave();
+  return pair;
 }
 
 export function updatePairTimeZone(

@@ -8,8 +8,12 @@ import type { VideoPair } from "../types.js";
 import { canonicalMediaPath } from "../utils/media-path.js";
 import { processManager } from "../utils/process-manager.js";
 
-export const OVERLAY_METADATA_EXTRACTOR_VERSION = 1;
-const SAMPLE_FRACTIONS = Array.from({ length: 10 }, (_, index) => index / 10);
+export const OVERLAY_METADATA_EXTRACTOR_VERSION = 2;
+const SAMPLE_CHECKPOINT_FRACTIONS = Array.from(
+  { length: 10 },
+  (_, index) => index / 10,
+);
+const SAMPLE_OFFSETS = [0, 0.005, 0.01] as const;
 const OCR_CONCURRENCY = Math.max(
   1,
   Number(process.env.OVERLAY_OCR_CONCURRENCY) || 1,
@@ -25,6 +29,8 @@ interface OcrWord {
 interface ParsedOverlayMetadata {
   cameraType: string;
   licensePlate: string;
+  cameraConfidence: number;
+  licensePlateConfidence: number;
   plateBounds: { left: number; width: number; pageWidth: number };
 }
 
@@ -34,10 +40,26 @@ export interface ExtractedOverlayMetadata {
   frameTimeSec: number;
 }
 
+export interface OverlayMetadataCandidate extends ExtractedOverlayMetadata {
+  cameraConfidence: number;
+  licensePlateConfidence: number;
+  plateBounds?: { left: number; width: number; pageWidth: number };
+}
+
 const queue: VideoPair[] = [];
 const queuedIds = new Set<string>();
 let active = 0;
 let scannerTimer: NodeJS.Timeout | undefined;
+
+function applyStoredMetadata(
+  pair: VideoPair,
+  metadata: ReturnType<typeof getRecordingOverlayMetadata>,
+): void {
+  if (!metadata) return;
+  pair.cameraType = metadata.cameraType;
+  pair.licensePlate = metadata.licensePlate;
+  pair.overlayMetadataStatus = metadata.status;
+}
 
 function cleanOcrToken(value: string): string {
   return value
@@ -105,11 +127,100 @@ export function parseOverlayTsv(
   return {
     cameraType,
     licensePlate,
+    cameraConfidence:
+      cameraWords.reduce((total, word) => total + word.confidence, 0) /
+      cameraWords.length,
+    licensePlateConfidence: plateWord.confidence,
     plateBounds: {
       left: plateWord.left,
       width: plateWord.width,
       pageWidth,
     },
+  };
+}
+
+export function getOverlaySampleTimes(durationSec: number): number[] {
+  if (!Number.isFinite(durationSec) || durationSec <= 0) return [0];
+
+  const sampleTimes = new Set<number>();
+  for (const checkpoint of SAMPLE_CHECKPOINT_FRACTIONS) {
+    for (const offset of SAMPLE_OFFSETS) {
+      const timeSec = Math.min(
+        Math.max(0, durationSec - 0.05),
+        durationSec * (checkpoint + offset),
+      );
+      sampleTimes.add(Math.round(timeSec * 1000) / 1000);
+    }
+  }
+  return [...sampleTimes];
+}
+
+function selectBestValue(
+  candidates: readonly OverlayMetadataCandidate[],
+  getValue: (candidate: OverlayMetadataCandidate) => string,
+  getConfidence: (candidate: OverlayMetadataCandidate) => number,
+): { value: string; matches: number } {
+  const groups = new Map<
+    string,
+    { count: number; confidenceTotal: number; bestConfidence: number }
+  >();
+  for (const candidate of candidates) {
+    const value = getValue(candidate);
+    const confidence = getConfidence(candidate);
+    const group = groups.get(value) ?? {
+      count: 0,
+      confidenceTotal: 0,
+      bestConfidence: 0,
+    };
+    group.count++;
+    group.confidenceTotal += confidence;
+    group.bestConfidence = Math.max(group.bestConfidence, confidence);
+    groups.set(value, group);
+  }
+
+  const [best] = [...groups].sort(([, left], [, right]) => {
+    if (left.count !== right.count) return right.count - left.count;
+    const averageDifference =
+      right.confidenceTotal / right.count - left.confidenceTotal / left.count;
+    if (averageDifference !== 0) return averageDifference;
+    return right.bestConfidence - left.bestConfidence;
+  });
+  return { value: best[0], matches: best[1].count };
+}
+
+export function selectBestOverlayMetadata(
+  candidates: readonly OverlayMetadataCandidate[],
+): ExtractedOverlayMetadata | undefined {
+  if (!candidates.length) return undefined;
+
+  const camera = selectBestValue(
+    candidates,
+    (candidate) => candidate.cameraType,
+    (candidate) => candidate.cameraConfidence,
+  );
+  const plate = selectBestValue(
+    candidates,
+    (candidate) => candidate.licensePlate,
+    (candidate) => candidate.licensePlateConfidence,
+  );
+  const representative = [...candidates].sort((left, right) => {
+    const getMatchCount = (candidate: OverlayMetadataCandidate) =>
+      Number(candidate.cameraType === camera.value) +
+      Number(candidate.licensePlate === plate.value);
+    const matchDifference = getMatchCount(right) - getMatchCount(left);
+    if (matchDifference !== 0) return matchDifference;
+    const getMatchingConfidence = (candidate: OverlayMetadataCandidate) =>
+      (candidate.cameraType === camera.value ? candidate.cameraConfidence : 0) +
+      (candidate.licensePlate === plate.value
+        ? candidate.licensePlateConfidence
+        : 0);
+    return getMatchingConfidence(right) - getMatchingConfidence(left);
+  })[0];
+
+  return {
+    cameraType: camera.value,
+    licensePlate: plate.value,
+    frameTimeSec: representative.frameTimeSec,
   };
 }
 
@@ -183,37 +294,103 @@ export async function extractOverlayMetadata(
   filePath: string,
   durationSec: number,
 ): Promise<ExtractedOverlayMetadata | undefined> {
-  const fractions = durationSec > 0 ? SAMPLE_FRACTIONS : [0];
-  for (const fraction of fractions) {
-    const frameTimeSec = Math.max(0, durationSec * fraction);
-    const frame = await extractBottomFrame(filePath, frameTimeSec);
-    const parsed = parseOverlayTsv(await runTesseract(frame, "tsv"));
-    if (!parsed) continue;
+  const candidates: OverlayMetadataCandidate[] = [];
+  let successfulSamples = 0;
+  let firstError: unknown;
+  for (const frameTimeSec of getOverlaySampleTimes(durationSec)) {
+    try {
+      const frame = await extractBottomFrame(filePath, frameTimeSec);
+      const parsed = parseOverlayTsv(await runTesseract(frame, "tsv"));
+      successfulSamples++;
+      if (!parsed) continue;
+      candidates.push({
+        cameraType: parsed.cameraType,
+        licensePlate: parsed.licensePlate,
+        cameraConfidence: parsed.cameraConfidence,
+        licensePlateConfidence: parsed.licensePlateConfidence,
+        frameTimeSec,
+        plateBounds: parsed.plateBounds,
+      });
+    } catch (error) {
+      firstError ??= error;
+      logger.debug(
+        { error, filePath, frameTimeSec },
+        "Overlay OCR sample failed",
+      );
+    }
+  }
+  if (!successfulSamples && firstError) throw firstError;
+  const selected = selectBestOverlayMetadata(candidates);
+  if (!selected) return undefined;
 
-    let licensePlate = parsed.licensePlate;
+  const refinementFrames = [...candidates]
+    .sort((left, right) => {
+      const getMatchCount = (candidate: OverlayMetadataCandidate) =>
+        Number(candidate.cameraType === selected.cameraType) +
+        Number(candidate.licensePlate === selected.licensePlate);
+      const matchDifference = getMatchCount(right) - getMatchCount(left);
+      if (matchDifference !== 0) return matchDifference;
+      return (
+        right.cameraConfidence +
+        right.licensePlateConfidence -
+        left.cameraConfidence -
+        left.licensePlateConfidence
+      );
+    })
+    .slice(0, 3);
+  const focusedPlates: Array<{ value: string; frameTimeSec: number }> = [];
+  for (const candidate of refinementFrames) {
+    if (!candidate.plateBounds) continue;
     try {
       const plateFrame = await extractBottomFrame(
         filePath,
-        frameTimeSec,
-        parsed.plateBounds,
+        candidate.frameTimeSec,
+        candidate.plateBounds,
       );
-      const focusedPlate = cleanOcrToken(
+      const value = cleanOcrToken(
         await runTesseract(plateFrame, "text"),
       ).replaceAll(/[^A-Z0-9-]/g, "");
-      if (/^[A-Z0-9][A-Z0-9-]{1,14}$/.test(focusedPlate)) {
-        licensePlate = focusedPlate;
+      if (/^[A-Z0-9][A-Z0-9-]{1,14}$/.test(value)) {
+        focusedPlates.push({ value, frameTimeSec: candidate.frameTimeSec });
       }
     } catch (error) {
-      logger.debug({ error }, "Focused plate OCR failed");
+      logger.debug(
+        { error, filePath, frameTimeSec: candidate.frameTimeSec },
+        "Focused plate OCR sample failed",
+      );
     }
-
-    return {
-      cameraType: parsed.cameraType,
-      licensePlate,
-      frameTimeSec,
-    };
   }
-  return undefined;
+
+  const focusedGroups = new Map<string, number>();
+  for (const plate of focusedPlates) {
+    focusedGroups.set(plate.value, (focusedGroups.get(plate.value) ?? 0) + 1);
+  }
+  const bestFocusedPlate = [...focusedGroups].sort(
+    (left, right) => right[1] - left[1],
+  )[0];
+  if (bestFocusedPlate?.[1] >= 2) {
+    selected.licensePlate = bestFocusedPlate[0];
+    selected.frameTimeSec = focusedPlates.find(
+      (plate) => plate.value === bestFocusedPlate[0],
+    )!.frameTimeSec;
+  }
+
+  logger.debug(
+    {
+      filePath,
+      sampledFrames: successfulSamples,
+      candidates: candidates.length,
+      cameraMatches: candidates.filter(
+        (candidate) => candidate.cameraType === selected.cameraType,
+      ).length,
+      plateMatches: candidates.filter(
+        (candidate) => candidate.licensePlate === selected.licensePlate,
+      ).length,
+      focusedPlateMatches: bestFocusedPlate?.[1] ?? 0,
+    },
+    "Selected recording overlay metadata from sampled frames",
+  );
+  return selected;
 }
 
 async function scanPair(pair: VideoPair): Promise<void> {
@@ -226,9 +403,7 @@ async function scanPair(pair: VideoPair): Promise<void> {
     canonicalMediaPath(cached.sourcePath) === canonicalMediaPath(source.path) &&
     Math.abs(cached.sourceMtimeMs - sourceMtimeMs) <= 1
   ) {
-    pair.cameraType = cached.cameraType;
-    pair.licensePlate = cached.licensePlate;
-    pair.overlayMetadataStatus = cached.status;
+    applyStoredMetadata(pair, cached);
     return;
   }
 
@@ -239,10 +414,7 @@ async function scanPair(pair: VideoPair): Promise<void> {
       pair.durationSec ?? 0,
     );
     if (extracted) {
-      pair.cameraType = extracted.cameraType;
-      pair.licensePlate = extracted.licensePlate;
-      pair.overlayMetadataStatus = "found";
-      upsertRecordingOverlayMetadata({
+      const stored = upsertRecordingOverlayMetadata({
         videoId: pair.id,
         cameraType: extracted.cameraType,
         licensePlate: extracted.licensePlate,
@@ -253,6 +425,7 @@ async function scanPair(pair: VideoPair): Promise<void> {
         scannedAt: Date.now(),
         frameTimeSec: extracted.frameTimeSec,
       });
+      applyStoredMetadata(pair, stored);
       logger.info(
         {
           videoId: pair.id,
@@ -265,8 +438,7 @@ async function scanPair(pair: VideoPair): Promise<void> {
       return;
     }
 
-    pair.overlayMetadataStatus = "not-found";
-    upsertRecordingOverlayMetadata({
+    const stored = upsertRecordingOverlayMetadata({
       videoId: pair.id,
       sourcePath: source.path,
       sourceMtimeMs,
@@ -274,9 +446,9 @@ async function scanPair(pair: VideoPair): Promise<void> {
       status: "not-found",
       scannedAt: Date.now(),
     });
+    applyStoredMetadata(pair, stored);
   } catch (error) {
-    pair.overlayMetadataStatus = "failed";
-    upsertRecordingOverlayMetadata({
+    const stored = upsertRecordingOverlayMetadata({
       videoId: pair.id,
       sourcePath: source.path,
       sourceMtimeMs,
@@ -284,6 +456,7 @@ async function scanPair(pair: VideoPair): Promise<void> {
       status: "failed",
       scannedAt: Date.now(),
     });
+    applyStoredMetadata(pair, stored);
     logger.warn({ error, videoId: pair.id }, "Recording overlay OCR failed");
   }
 }
@@ -316,9 +489,7 @@ function enqueuePairs(pairs: VideoPair[]): void {
         canonicalMediaPath(source.path) &&
       Math.abs(cached.sourceMtimeMs - (source.mtimeMs ?? 0)) <= 1;
     if (cacheCurrent) {
-      pair.cameraType = cached.cameraType;
-      pair.licensePlate = cached.licensePlate;
-      pair.overlayMetadataStatus = cached.status;
+      applyStoredMetadata(pair, cached);
       continue;
     }
     pair.overlayMetadataStatus = "pending";
@@ -339,9 +510,7 @@ function hydratePairsFromCache(pairs: VideoPair[]): void {
         canonicalMediaPath(source.path) &&
       Math.abs(cached.sourceMtimeMs - (source.mtimeMs ?? 0)) <= 1
     ) {
-      pair.cameraType = cached.cameraType;
-      pair.licensePlate = cached.licensePlate;
-      pair.overlayMetadataStatus = cached.status;
+      applyStoredMetadata(pair, cached);
     }
   }
 }

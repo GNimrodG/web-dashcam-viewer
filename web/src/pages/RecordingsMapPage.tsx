@@ -26,6 +26,13 @@ import {
   spaceGpsOverlapLocations,
 } from "../utils/gps-overlap";
 import { formatPairTime } from "../utils/recording-time";
+import { interpolateGpsPosition } from "../utils/gps-interpolation";
+
+function formatMapTime(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
 
 interface OutletContext {
   selectPair: (pair: VideoPair | null) => void;
@@ -139,6 +146,32 @@ export default function RecordingsMapPage() {
         .bindTooltip(routeTooltip(track), { sticky: true })
         .on("click", () => openRecording(track))
         .addTo(layers);
+
+      for (const poi of track.pois || []) {
+        if (
+          poi.timeSec < track.points[0].tsSec ||
+          poi.timeSec > track.points.at(-1)!.tsSec
+        ) {
+          continue;
+        }
+        const position = interpolateGpsPosition(track.points, poi.timeSec);
+        if (!position) continue;
+        const automatic = poi.kind === "camera-save";
+        const marker = L.circleMarker([position.lat, position.lon], {
+          radius: automatic ? 7 : 6,
+          color: automatic ? "#7f1d1d" : "#7c2d12",
+          weight: 2,
+          fillColor: automatic ? "#dc2626" : "#f97316",
+          fillOpacity: 1,
+          bubblingMouseEvents: false,
+        });
+        const tooltip = document.createElement("span");
+        tooltip.textContent = `${poi.label} · ${formatMapTime(poi.timeSec)} · ${formatPairTime(track)}`;
+        marker
+          .bindTooltip(tooltip, { direction: "top" })
+          .on("click", () => openRecording(track))
+          .addTo(layers);
+      }
     }
 
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [28, 28] });
@@ -243,8 +276,9 @@ export default function RecordingsMapPage() {
           label="Show overlapping locations"
         />
         <Typography level="body-xs" sx={{ mt: 0.75, maxWidth: 320 }}>
-          Colored lines are recordings. Yellow, orange, and red circles mark
-          areas shared by multiple recordings; click one to see the recordings.
+          Colored lines are recordings. Small orange circles mark manual POIs
+          and small red circles mark detected recording saves. Larger yellow,
+          orange, and red circles mark areas shared by multiple recordings.
         </Typography>
       </Sheet>
 

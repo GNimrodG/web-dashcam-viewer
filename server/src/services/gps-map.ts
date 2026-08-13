@@ -10,6 +10,7 @@ import {
 import { getGpsTrackForPair, getVideoPairs } from "./indexer.js";
 import { logger } from "../logger.js";
 import { hasCurrentNoGpsResult } from "./gps.js";
+import { getAllVideoPoisMap, type VideoPoi } from "../db/database.js";
 
 export interface GpsMapTrack {
   id: string;
@@ -18,6 +19,7 @@ export interface GpsMapTrack {
   startLocationName?: string;
   endLocationName?: string;
   points: GpsMapPoint[];
+  pois: VideoPoi[];
 }
 
 export interface GpsMapCatalog {
@@ -115,6 +117,7 @@ async function buildCatalog(
           startLocationName: pair.startLocationName,
           endLocationName: pair.endLocationName,
           points: sampleGpsTrack(points),
+          pois: [],
         };
       } catch (error) {
         logger.warn(error, `Failed to load GPS map track for ${pair.id}`);
@@ -132,13 +135,28 @@ async function buildCatalog(
   };
 }
 
+function attachCurrentPois(catalog: GpsMapCatalog): GpsMapCatalog {
+  const poisByVideo = getAllVideoPoisMap();
+  return {
+    ...catalog,
+    tracks: catalog.tracks.map((track) => ({
+      ...track,
+      pois: poisByVideo.get(track.id) ?? [],
+    })),
+  };
+}
+
 export async function getGpsMapCatalog(
   mediaDir: string,
 ): Promise<GpsMapCatalog> {
   const pairs = getVideoPairs();
   const signature = buildGpsMapSignature(pairs);
-  if (memoryCache?.signature === signature) return memoryCache.catalog;
-  if (inFlight?.signature === signature) return inFlight.promise;
+  if (memoryCache?.signature === signature) {
+    return attachCurrentPois(memoryCache.catalog);
+  }
+  if (inFlight?.signature === signature) {
+    return attachCurrentPois(await inFlight.promise);
+  }
 
   const generation = cacheGeneration;
   const cachePath = getCachePath(mediaDir);
@@ -165,7 +183,7 @@ export async function getGpsMapCatalog(
   })();
   inFlight = { signature, promise };
   try {
-    return await promise;
+    return attachCurrentPois(await promise);
   } finally {
     if (inFlight?.promise === promise) inFlight = undefined;
   }

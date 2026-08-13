@@ -45,6 +45,7 @@ import { formatPairTime } from "../utils/recording-time";
 import AddLocationAltIcon from "@mui/icons-material/AddLocationAlt";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import Input from "@mui/joy/Input";
 import LinearProgress from "@mui/joy/LinearProgress";
 import {
@@ -53,6 +54,7 @@ import {
   getRelativeSeekTarget,
   KEYBOARD_SEEK_SECONDS,
 } from "../utils/playback-seek";
+import EditRecordingMetadataModal from "./EditRecordingMetadataModal";
 
 interface PlayerProps {
   pair: VideoPair | null;
@@ -62,6 +64,7 @@ interface PlayerProps {
   poisLoading?: boolean;
   onCreatePoi?: (timeSec: number, label: string) => Promise<VideoPoi>;
   onDeletePoi?: (poiId: string) => Promise<void>;
+  onPairUpdated?: (pair: VideoPair) => void;
 }
 
 function formatTime(seconds: number) {
@@ -115,6 +118,7 @@ export function Player({
   poisLoading = false,
   onCreatePoi,
   onDeletePoi,
+  onPairUpdated,
 }: Readonly<PlayerProps>) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -146,6 +150,7 @@ export function Player({
   const [poiLabel, setPoiLabel] = useState("");
   const [poiSaving, setPoiSaving] = useState(false);
   const [poiError, setPoiError] = useState<string | null>(null);
+  const [showMetadataDialog, setShowMetadataDialog] = useState(false);
   const startPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const endPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -466,6 +471,7 @@ export function Player({
 
     setIsPlaying(false);
     setShowPoiDialog(false);
+    setShowMetadataDialog(false);
   }, [pair?.id]);
 
   useEffect(() => {
@@ -672,11 +678,12 @@ export function Player({
   const marks = useMemo(() => {
     const timelineMarks = getMinMarksForLength(pair?.durationSec || 0);
     for (const poi of pois) {
+      const automatic = poi.kind === "camera-save";
       const poiIndicator = (
         <Box
           component="span"
           title={`${poi.label} at ${formatTime(poi.timeSec)}`}
-          sx={{ color: "#f97316" }}>
+          sx={{ color: automatic ? "#dc2626" : "#f97316" }}>
           ◆
         </Box>
       );
@@ -861,15 +868,26 @@ export function Player({
               </Menu>
             </Dropdown>
 
-            <Stack spacing={0}>
-              <Typography level="title-md">{formatPairTime(pair)}</Typography>
-              {(pair.cameraType || pair.licensePlate) && (
-                <Typography level="body-xs" color="neutral">
-                  {[pair.cameraType, pair.licensePlate]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </Typography>
-              )}
+            <Stack direction="row" spacing={0.25} alignItems="center">
+              <Stack spacing={0}>
+                <Typography level="title-md">{formatPairTime(pair)}</Typography>
+                {(pair.cameraType || pair.licensePlate) && (
+                  <Typography level="body-xs" color="neutral">
+                    {[pair.cameraType, pair.licensePlate]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </Typography>
+                )}
+              </Stack>
+              <IconButton
+                aria-label="Edit camera type and vehicle license plate"
+                title="Edit camera type and vehicle license plate"
+                size="sm"
+                variant="plain"
+                color="neutral"
+                onClick={() => setShowMetadataDialog(true)}>
+                <EditOutlinedIcon fontSize="small" />
+              </IconButton>
             </Stack>
           </Stack>
         </Stack>
@@ -1124,6 +1142,13 @@ export function Player({
         )}
       </Stack>
 
+      <EditRecordingMetadataModal
+        open={showMetadataDialog}
+        pair={pair}
+        onClose={() => setShowMetadataDialog(false)}
+        onUpdated={(updatedPair) => onPairUpdated?.(updatedPair)}
+      />
+
       <Modal open={showPoiDialog} onClose={() => setShowPoiDialog(false)}>
         <ModalDialog sx={{ width: "min(520px, calc(100vw - 32px))" }}>
           <DialogTitle>Points of interest</DialogTitle>
@@ -1178,7 +1203,13 @@ export function Player({
                       <Button
                         variant="plain"
                         color="neutral"
-                        startDecorator={<LocationOnIcon color="warning" />}
+                        startDecorator={
+                          <LocationOnIcon
+                            color={
+                              poi.kind === "camera-save" ? "error" : "warning"
+                            }
+                          />
+                        }
                         onClick={() => {
                           seekTo(poi.timeSec);
                           setShowPoiDialog(false);
@@ -1186,13 +1217,15 @@ export function Player({
                         sx={{ flex: 1, justifyContent: "flex-start" }}>
                         {formatTime(poi.timeSec)} · {poi.label}
                       </Button>
-                      <IconButton
-                        aria-label={`Delete ${poi.label}`}
-                        color="danger"
-                        variant="plain"
-                        onClick={() => void handleDeletePoi(poi.id)}>
-                        <DeleteOutlineIcon />
-                      </IconButton>
+                      {poi.kind !== "camera-save" && (
+                        <IconButton
+                          aria-label={`Delete ${poi.label}`}
+                          color="danger"
+                          variant="plain"
+                          onClick={() => void handleDeletePoi(poi.id)}>
+                          <DeleteOutlineIcon />
+                        </IconButton>
+                      )}
                     </Stack>
                   ))}
                 </Stack>

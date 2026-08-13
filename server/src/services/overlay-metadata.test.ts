@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseOverlayTsv } from "./overlay-metadata.js";
+import {
+  getOverlaySampleTimes,
+  type OverlayMetadataCandidate,
+  parseOverlayTsv,
+  selectBestOverlayMetadata,
+} from "./overlay-metadata.js";
 
 test("extracts camera type and plate from the spatial middle overlay block", () => {
   const header =
@@ -20,6 +25,8 @@ test("extracts camera type and plate from the spatial middle overlay block", () 
   const result = parseOverlayTsv([header, ...rows].join("\n"));
   assert.equal(result?.cameraType, "VIOFO A139 PRO");
   assert.equal(result?.licensePlate, "TEST123");
+  assert.equal(result?.cameraConfidence, (88 + 90 + 90) / 3);
+  assert.equal(result?.licensePlateConfidence, 48);
   assert.deepEqual(result?.plateBounds, {
     left: 4282,
     width: 376,
@@ -35,4 +42,76 @@ test("rejects a line without a middle camera and plate block", () => {
     "5\t1\t1\t1\t1\t2\t1600\t20\t200\t50\t90\tHDR",
   ].join("\n");
   assert.equal(parseOverlayTsv(tsv), undefined);
+});
+
+test("samples three frames near every ten-percent checkpoint", () => {
+  const times = getOverlaySampleTimes(100);
+  assert.equal(times.length, 30);
+  assert.deepEqual(times.slice(0, 6), [0, 0.5, 1, 10, 10.5, 11]);
+  assert.deepEqual(times.slice(-3), [90, 90.5, 91]);
+  assert.deepEqual(getOverlaySampleTimes(0), [0]);
+});
+
+test("prefers repeated OCR values over a single high-confidence result", () => {
+  const candidates: OverlayMetadataCandidate[] = [
+    {
+      cameraType: "SINGLE CAMERA",
+      licensePlate: "SINGLE",
+      cameraConfidence: 99,
+      licensePlateConfidence: 99,
+      frameTimeSec: 0,
+    },
+    {
+      cameraType: "CONSENSUS CAMERA",
+      licensePlate: "CONSENSUS",
+      cameraConfidence: 65,
+      licensePlateConfidence: 60,
+      frameTimeSec: 10,
+    },
+    {
+      cameraType: "CONSENSUS CAMERA",
+      licensePlate: "CONSENSUS",
+      cameraConfidence: 55,
+      licensePlateConfidence: 50,
+      frameTimeSec: 20,
+    },
+  ];
+
+  assert.deepEqual(selectBestOverlayMetadata(candidates), {
+    cameraType: "CONSENSUS CAMERA",
+    licensePlate: "CONSENSUS",
+    frameTimeSec: 10,
+  });
+});
+
+test("selects camera and plate consensus independently", () => {
+  const candidates: OverlayMetadataCandidate[] = [
+    {
+      cameraType: "CAMERA A",
+      licensePlate: "VALUE A",
+      cameraConfidence: 70,
+      licensePlateConfidence: 70,
+      frameTimeSec: 10,
+    },
+    {
+      cameraType: "CAMERA A",
+      licensePlate: "VALUE B",
+      cameraConfidence: 80,
+      licensePlateConfidence: 80,
+      frameTimeSec: 20,
+    },
+    {
+      cameraType: "CAMERA B",
+      licensePlate: "VALUE B",
+      cameraConfidence: 90,
+      licensePlateConfidence: 90,
+      frameTimeSec: 30,
+    },
+  ];
+
+  assert.deepEqual(selectBestOverlayMetadata(candidates), {
+    cameraType: "CAMERA A",
+    licensePlate: "VALUE B",
+    frameTimeSec: 20,
+  });
 });
