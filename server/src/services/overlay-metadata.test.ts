@@ -43,13 +43,13 @@ test("distinguishes recordings that were never processed from completed OCR resu
   );
 });
 
-test("caps overlay OCR concurrency to a safe worker count", () => {
+test("parses overlay OCR concurrency without an upper limit", () => {
   assert.equal(parseOverlayOcrConcurrency(undefined), 1);
   assert.equal(parseOverlayOcrConcurrency("2"), 2);
   assert.equal(parseOverlayOcrConcurrency("2.9"), 2);
   assert.equal(parseOverlayOcrConcurrency("0"), 1);
   assert.equal(parseOverlayOcrConcurrency("not-a-number"), 1);
-  assert.equal(parseOverlayOcrConcurrency("180"), 4);
+  assert.equal(parseOverlayOcrConcurrency("180"), 180);
 });
 
 test("extracts camera type and plate from the spatial middle overlay block", () => {

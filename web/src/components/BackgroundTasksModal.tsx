@@ -7,6 +7,7 @@ import DialogContent from "@mui/joy/DialogContent";
 import DialogTitle from "@mui/joy/DialogTitle";
 import IconButton from "@mui/joy/IconButton";
 import Input from "@mui/joy/Input";
+import LinearProgress from "@mui/joy/LinearProgress";
 import Modal from "@mui/joy/Modal";
 import ModalClose from "@mui/joy/ModalClose";
 import ModalDialog from "@mui/joy/ModalDialog";
@@ -14,6 +15,7 @@ import Option from "@mui/joy/Option";
 import Select from "@mui/joy/Select";
 import Sheet from "@mui/joy/Sheet";
 import Stack from "@mui/joy/Stack";
+import Switch from "@mui/joy/Switch";
 import Table from "@mui/joy/Table";
 import Typography from "@mui/joy/Typography";
 import RefreshIcon from "@mui/icons-material/Refresh";
@@ -33,9 +35,13 @@ import {
   type BackgroundTasksStatus,
   type PostProcessJobStatus,
   type PostProcessKind,
-  type RecordingPostProcessJobs,
 } from "../api";
 import { formatRecordingTime, parsePairIdTime } from "../utils/recording-time";
+import {
+  comparePostProcessJobsByExecutionOrder,
+  flattenPostProcessJobs,
+  isFinishedPostProcessJob,
+} from "../utils/post-process-job-list";
 import {
   getPostProcessStatePresentation,
   POST_PROCESS_KINDS,
@@ -48,122 +54,18 @@ interface BackgroundTasksModalProps {
   onRefreshRecordings: () => void;
 }
 
-type RecordingFilter = "all" | "active" | "attention";
+type JobFilter = "unfinished" | "active" | "attention" | "finished" | "all";
 type Notice = { color: "success" | "warning"; message: string };
 
-const MAX_VISIBLE_RECORDINGS = 100;
+const MAX_VISIBLE_JOBS = 300;
 function formatPairId(id: string): string {
   const timestamp = parsePairIdTime(id);
   return timestamp === null ? id : formatRecordingTime(timestamp);
 }
 
-function JobCell({
-  recordingId,
-  kind,
-  job,
-  retrying,
-  onRetry,
-}: Readonly<{
-  recordingId: string;
-  kind: PostProcessKind;
-  job: PostProcessJobStatus;
-  retrying: boolean;
-  onRetry: (id: string, kind: PostProcessKind) => void;
-}>) {
-  const presentation = getPostProcessStatePresentation(job.state);
-  const label = POST_PROCESS_LABELS[kind];
-  return (
-    <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.75 }}>
-      <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Chip size="sm" color={presentation.color} variant="soft">
-          {presentation.label}
-        </Chip>
-        <Typography
-          level="body-xs"
-          color="neutral"
-          title={job.message}
-          sx={{ mt: 0.35 }}>
-          {job.message}
-        </Typography>
-        {job.updatedAt && (
-          <Typography level="body-xs" color="neutral">
-            {moment(job.updatedAt).fromNow()}
-          </Typography>
-        )}
-      </Box>
-      <IconButton
-        size="sm"
-        variant="plain"
-        color="neutral"
-        loading={retrying}
-        disabled={!job.retryable || retrying}
-        aria-label={`Retry ${label} for ${formatPairId(recordingId)}`}
-        title={job.retryable ? `Retry ${label}` : job.message}
-        onClick={() => onRetry(recordingId, kind)}>
-        <ReplayIcon />
-      </IconButton>
-    </Box>
-  );
-}
-
-function JobSummary({
-  title,
-  kind,
-  recordings,
-  detail,
-}: Readonly<{
-  title: string;
-  kind: PostProcessKind;
-  recordings: readonly RecordingPostProcessJobs[];
-  detail: string;
-}>) {
-  const jobs = recordings.map((recording) => recording.jobs[kind]);
-  const running = jobs.filter((job) => job.state === "running").length;
-  const queued = jobs.filter((job) => job.state === "queued").length;
-  const failed = jobs.filter((job) => job.state === "failed").length;
-  const pending = jobs.filter((job) => job.state === "not-processed").length;
-  const completed = jobs.filter(
-    (job) => job.state === "completed" || job.state === "no-data",
-  ).length;
-  const blocked = jobs.filter(
-    (job) => job.state === "disabled" || job.state === "unavailable",
-  ).length;
-  return (
-    <Sheet variant="outlined" sx={{ borderRadius: "md", p: 1.5 }}>
-      <Typography level="title-sm">{title}</Typography>
-      <Typography level="body-xs" color="neutral" sx={{ mb: 1 }}>
-        {detail}
-      </Typography>
-      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-        <Chip
-          size="sm"
-          color={completed ? "success" : "neutral"}
-          variant="soft">
-          Done: {completed}
-        </Chip>
-        <Chip size="sm" color={running ? "primary" : "neutral"} variant="soft">
-          Running: {running}
-        </Chip>
-        <Chip size="sm" color={queued ? "warning" : "neutral"} variant="soft">
-          Queued: {queued}
-        </Chip>
-        <Chip size="sm" color={pending ? "warning" : "neutral"} variant="soft">
-          Not processed: {pending}
-        </Chip>
-        <Chip size="sm" color={failed ? "danger" : "neutral"} variant="soft">
-          Failed: {failed}
-        </Chip>
-        <Chip size="sm" color={blocked ? "danger" : "neutral"} variant="soft">
-          Blocked: {blocked}
-        </Chip>
-      </Box>
-    </Sheet>
-  );
-}
-
-function needsAttention(recording: RecordingPostProcessJobs): boolean {
-  return Object.values(recording.jobs).some((job) =>
-    ["not-processed", "failed", "disabled", "unavailable"].includes(job.state),
+function needsAttention(job: PostProcessJobStatus): boolean {
+  return ["not-processed", "failed", "disabled", "unavailable"].includes(
+    job.state,
   );
 }
 
@@ -178,7 +80,8 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [retrying, setRetrying] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<RecordingFilter>("all");
+  const [filter, setFilter] = useState<JobFilter>("unfinished");
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -193,28 +96,39 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
   useEffect(() => {
     if (!open) return;
     void refreshStatus();
-    const interval = window.setInterval(() => void refreshStatus(), 1_000);
-    return () => window.clearInterval(interval);
   }, [open, refreshStatus]);
 
-  const filteredRecordings = useMemo(() => {
+  useEffect(() => {
+    if (!open || !autoRefresh) return;
+    const interval = window.setInterval(() => void refreshStatus(), 1_000);
+    return () => window.clearInterval(interval);
+  }, [autoRefresh, open, refreshStatus]);
+
+  const filteredJobs = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return (status?.recordings ?? []).filter((recording) => {
-      if (
-        needle &&
-        !recording.id.toLowerCase().includes(needle) &&
-        !formatPairId(recording.id).toLowerCase().includes(needle)
-      ) {
-        return false;
-      }
-      if (filter === "active") {
-        return Object.values(recording.jobs).some(
-          (job) => job.state === "queued" || job.state === "running",
-        );
-      }
-      if (filter === "attention") return needsAttention(recording);
-      return true;
-    });
+    return flattenPostProcessJobs(status?.recordings ?? [])
+      .filter((row) => {
+        const taskLabel = POST_PROCESS_LABELS[row.kind];
+        const stateLabel = getPostProcessStatePresentation(row.job.state).label;
+        if (
+          needle &&
+          !row.recordingId.toLowerCase().includes(needle) &&
+          !formatPairId(row.recordingId).toLowerCase().includes(needle) &&
+          !taskLabel.toLowerCase().includes(needle) &&
+          !stateLabel.toLowerCase().includes(needle) &&
+          !row.job.message.toLowerCase().includes(needle)
+        ) {
+          return false;
+        }
+        if (filter === "unfinished") return !isFinishedPostProcessJob(row.job);
+        if (filter === "finished") return isFinishedPostProcessJob(row.job);
+        if (filter === "active") {
+          return row.job.state === "queued" || row.job.state === "running";
+        }
+        if (filter === "attention") return needsAttention(row.job);
+        return true;
+      })
+      .sort(comparePostProcessJobsByExecutionOrder);
   }, [filter, search, status?.recordings]);
 
   const handleRefresh = async () => {
@@ -266,7 +180,7 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
     onClose();
   };
 
-  const visibleRecordings = filteredRecordings.slice(0, MAX_VISIBLE_RECORDINGS);
+  const visibleJobs = filteredJobs.slice(0, MAX_VISIBLE_JOBS);
 
   return (
     <Modal open={open} onClose={handleClose} sx={{ zIndex: 11000 }}>
@@ -277,16 +191,7 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
           overflow: "hidden",
         }}>
         <ModalClose />
-        <DialogTitle
-          sx={{
-            position: "sticky",
-            top: 0,
-            zIndex: 2,
-            bgcolor: "background.surface",
-            pr: 4,
-          }}>
-          Post-processing jobs
-        </DialogTitle>
+        <DialogTitle sx={{ pr: 4 }}>Post-processing jobs</DialogTitle>
         <DialogContent sx={{ overflowX: "hidden" }}>
           <Stack spacing={2}>
             <Box
@@ -300,7 +205,7 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
                 size="sm"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Find recording"
+                placeholder="Find recording or task"
                 startDecorator={<SearchIcon />}
                 sx={{ flex: "1 1 260px" }}
               />
@@ -308,11 +213,27 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
                 size="sm"
                 value={filter}
                 onChange={(_, value) => value && setFilter(value)}
-                sx={{ minWidth: 170 }}>
-                <Option value="all">All recordings</Option>
+                sx={{ minWidth: 170 }}
+                slotProps={{
+                  listbox: {
+                    sx: {
+                      zIndex: 11001,
+                    },
+                  },
+                }}>
+                <Option value="unfinished">Unfinished jobs</Option>
                 <Option value="active">Queued or running</Option>
                 <Option value="attention">Needs attention</Option>
+                <Option value="finished">Finished jobs</Option>
+                <Option value="all">All jobs</Option>
               </Select>
+              <Switch
+                checked={autoRefresh}
+                onChange={(event) => setAutoRefresh(event.target.checked)}
+                startDecorator={
+                  <Typography level="body-sm">Auto-refresh</Typography>
+                }
+              />
               <Button
                 size="sm"
                 variant="outlined"
@@ -333,35 +254,6 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
 
             {status && (
               <>
-                <Box
-                  sx={{
-                    display: "grid",
-                    gridTemplateColumns: {
-                      xs: "1fr",
-                      md: "repeat(3, minmax(0, 1fr))",
-                    },
-                    gap: 1,
-                  }}>
-                  <JobSummary
-                    title="Camera overlay OCR"
-                    kind="overlay-ocr"
-                    recordings={status.recordings}
-                    detail={`${status.overlayOcr.message} · concurrency ${status.overlayOcr.limit}`}
-                  />
-                  <JobSummary
-                    title="Saving beep detection"
-                    kind="audio-events"
-                    recordings={status.recordings}
-                    detail={`${status.audioEvents.enabled ? "Enabled" : "Disabled"} · concurrency ${status.audioEvents.limit}`}
-                  />
-                  <JobSummary
-                    title="GPS extraction"
-                    kind="gps-extraction"
-                    recordings={status.recordings}
-                    detail={`Concurrency ${status.gpsExtraction.limit}`}
-                  />
-                </Box>
-
                 <Sheet
                   variant="outlined"
                   sx={{
@@ -373,109 +265,125 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
                     size="sm"
                     stickyHeader
                     hoverRow
-                    sx={{ minWidth: 1040, tableLayout: "fixed" }}>
+                    sx={{ minWidth: 940, tableLayout: "fixed", ["."]: {} }}>
                     <thead>
                       <tr>
                         <th style={{ width: 175 }}>Recording</th>
-                        <th>Camera overlay OCR</th>
-                        <th>Saving beep detection</th>
-                        <th>GPS extraction</th>
-                        <th style={{ width: 105 }}>Actions</th>
+                        <th style={{ width: 175 }}>Task</th>
+                        <th style={{ width: 120 }}>Status</th>
+                        <th>Details</th>
+                        <th style={{ width: 120 }}>Updated</th>
+                        <th style={{ width: 70 }}>Retry</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {visibleRecordings.map((recording) => (
-                        <tr key={recording.id}>
-                          <td>
-                            <Typography level="title-sm">
-                              {formatPairId(recording.id)}
-                            </Typography>
-                            <Typography level="body-xs" color="neutral">
-                              {recording.id}
-                            </Typography>
-                          </td>
-                          {POST_PROCESS_KINDS.map((kind) => (
-                            <td key={kind}>
-                              <JobCell
-                                recordingId={recording.id}
-                                kind={kind}
-                                job={recording.jobs[kind]}
-                                retrying={retrying.has(
-                                  `${recording.id}:${kind}`,
-                                )}
-                                onRetry={(id, selectedKind) =>
-                                  void handleRetry(id, selectedKind)
-                                }
-                              />
+                      {visibleJobs.map(({ recordingId, kind, job }) => {
+                        const presentation = getPostProcessStatePresentation(
+                          job.state,
+                        );
+                        const taskLabel = POST_PROCESS_LABELS[kind];
+                        const retryKey = `${recordingId}:${kind}`;
+                        return (
+                          <tr key={retryKey}>
+                            <td>
+                              <Typography level="title-sm">
+                                {formatPairId(recordingId)}
+                              </Typography>
+                              <Typography level="body-xs" color="neutral">
+                                {recordingId}
+                              </Typography>
                             </td>
-                          ))}
-                          <td>
-                            <Button
-                              size="sm"
-                              variant="outlined"
-                              startDecorator={<ReplayIcon />}
-                              loading={retrying.has(`${recording.id}:all`)}
-                              disabled={
-                                !Object.values(recording.jobs).some(
-                                  (job) => job.retryable,
-                                )
-                              }
-                              aria-label={`Run all post-processing jobs for ${formatPairId(recording.id)}`}
-                              onClick={() =>
-                                void handleRetry(recording.id, "all")
-                              }>
-                              Run all
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
+                            <td>
+                              <Typography level="title-sm">
+                                {taskLabel}
+                              </Typography>
+                            </td>
+                            <td>
+                              <Chip
+                                size="sm"
+                                color={presentation.color}
+                                variant="soft">
+                                {presentation.label}
+                              </Chip>
+                            </td>
+                            <td>
+                              <Stack spacing={0.5}>
+                                <Typography level="body-sm" title={job.message}>
+                                  {job.message}
+                                </Typography>
+                                {job.progress && (
+                                  <Box
+                                    sx={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 1,
+                                    }}>
+                                    <LinearProgress
+                                      determinate
+                                      value={job.progress.percent}
+                                      sx={{ flex: 1, minWidth: 80 }}
+                                      aria-label={`${taskLabel} progress`}
+                                    />
+                                    <Typography
+                                      level="body-xs"
+                                      color="neutral"
+                                      sx={{ whiteSpace: "nowrap" }}>
+                                      {job.progress.current}/
+                                      {job.progress.total} (
+                                      {job.progress.percent}
+                                      %)
+                                    </Typography>
+                                  </Box>
+                                )}
+                              </Stack>
+                            </td>
+                            <td>
+                              <Typography level="body-xs" color="neutral">
+                                {job.updatedAt
+                                  ? moment(job.updatedAt).fromNow()
+                                  : "—"}
+                              </Typography>
+                            </td>
+                            <td>
+                              <IconButton
+                                size="sm"
+                                variant="plain"
+                                color="neutral"
+                                loading={retrying.has(retryKey)}
+                                disabled={
+                                  !job.retryable || retrying.has(retryKey)
+                                }
+                                aria-label={`Retry ${taskLabel} for ${formatPairId(recordingId)}`}
+                                title={
+                                  job.retryable
+                                    ? `Retry ${taskLabel}`
+                                    : job.message
+                                }
+                                onClick={() =>
+                                  void handleRetry(recordingId, kind)
+                                }>
+                                <ReplayIcon />
+                              </IconButton>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </Table>
                 </Sheet>
 
-                {visibleRecordings.length === 0 && (
+                {visibleJobs.length === 0 && (
                   <Typography level="body-sm" color="neutral">
-                    No recordings match the current filters.
+                    No jobs match the current filters.
                   </Typography>
                 )}
-                {filteredRecordings.length > visibleRecordings.length && (
+                {filteredJobs.length > visibleJobs.length && (
                   <Typography level="body-xs" color="neutral">
-                    Showing the first {visibleRecordings.length} of{" "}
-                    {filteredRecordings.length} recordings. Refine the search to
-                    find a specific recording.
+                    Showing the first {visibleJobs.length} of{" "}
+                    {filteredJobs.length} jobs. Refine the search to find a
+                    specific job.
                   </Typography>
                 )}
-
-                <Sheet variant="outlined" sx={{ borderRadius: "md", p: 1.5 }}>
-                  <Typography level="title-sm">
-                    Recent clip generation jobs
-                  </Typography>
-                  <Box
-                    sx={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: 0.75,
-                      mt: 1,
-                    }}>
-                    <Chip size="sm" variant="soft">
-                      Running:{" "}
-                      {
-                        status.clipJobs.filter((job) => job.state === "running")
-                          .length
-                      }
-                    </Chip>
-                    <Chip size="sm" color="danger" variant="soft">
-                      Failed:{" "}
-                      {
-                        status.clipJobs.filter((job) => job.state === "failed")
-                          .length
-                      }
-                    </Chip>
-                    <Chip size="sm" variant="outlined">
-                      Recent: {status.clipJobs.length}
-                    </Chip>
-                  </Box>
-                </Sheet>
               </>
             )}
           </Stack>

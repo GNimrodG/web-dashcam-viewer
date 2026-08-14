@@ -62,6 +62,9 @@ import {
   getVideoPoiTypeCounts,
   getVideoPoiTypeCountsMap,
   type VideoPoiTypeCounts,
+  getRecordingAudioScan,
+  getRecordingAudioScans,
+  type RecordingAudioScan,
   getRecordingTimeZone,
   getRecordingTimeZones,
   deleteRecordingStartTime,
@@ -71,6 +74,7 @@ import {
 import {
   ensureRecordingAudioEvents,
   getAudioEventScannerStatus,
+  getRecordingAudioStatus,
 } from "../services/audio-events.js";
 import { getOverlayMetadataScannerStatus } from "../services/overlay-metadata.js";
 import {
@@ -108,6 +112,8 @@ function serializePair(
   pair: NonNullable<ReturnType<typeof getVideoPairById>>,
   poiCounts: VideoPoiTypeCounts = getVideoPoiTypeCounts(pair.id),
   timeZone = getRecordingTimeZone(pair.id) || config.DASHCAM_TIME_ZONE,
+  audioScan: RecordingAudioScan | undefined = getRecordingAudioScan(pair.id),
+  audioScannerEnabled = getAudioEventScannerStatus().enabled,
 ) {
   return {
     ...pair,
@@ -115,6 +121,7 @@ function serializePair(
     manualPoiCount: poiCounts.manual,
     cameraSavePoiCount: poiCounts.cameraSave,
     dashcamTimeZone: timeZone,
+    audioStatus: getRecordingAudioStatus(pair, audioScan, audioScannerEnabled),
   };
 }
 
@@ -123,12 +130,16 @@ router.get("/", (_req, res) => {
   const pairs = getVideoPairs();
   const poiCounts = getVideoPoiTypeCountsMap();
   const timeZones = getRecordingTimeZones();
+  const audioScans = getRecordingAudioScans();
+  const audioScannerEnabled = getAudioEventScannerStatus().enabled;
   res.json(
     pairs.map((pair) =>
       serializePair(
         pair,
         poiCounts.get(pair.id) ?? { total: 0, manual: 0, cameraSave: 0 },
         timeZones.get(pair.id) || config.DASHCAM_TIME_ZONE,
+        audioScans.get(pair.id),
+        audioScannerEnabled,
       ),
     ),
   );

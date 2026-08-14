@@ -42,6 +42,12 @@ export interface PostProcessJobStatus {
   message: string;
   retryable: boolean;
   updatedAt?: number;
+  progress?: {
+    current: number;
+    total: number;
+    percent: number;
+    label: string;
+  };
 }
 
 export interface RecordingPostProcessJobs {
@@ -51,7 +57,13 @@ export interface RecordingPostProcessJobs {
 }
 
 export interface RuntimeLookup {
-  processing: Map<string, number>;
+  processing: Map<
+    string,
+    {
+      startedAt: number;
+      progress?: PostProcessJobStatus["progress"];
+    }
+  >;
   queued: Map<string, { queuedAt: number; position: number }>;
 }
 
@@ -62,12 +74,19 @@ interface ScannerSnapshots {
 }
 
 export function createRuntimeLookup(
-  processing: readonly { id: string; startedAt: number }[],
+  processing: readonly {
+    id: string;
+    startedAt: number;
+    progress?: PostProcessJobStatus["progress"];
+  }[],
   queued: readonly { id: string; queuedAt: number }[],
 ): RuntimeLookup {
   return {
     processing: new Map(
-      processing.map((item) => [item.id, item.startedAt] as const),
+      processing.map((item) => [
+        item.id,
+        { startedAt: item.startedAt, progress: item.progress },
+      ]),
     ),
     queued: new Map(
       queued.map((item, index) => [
@@ -82,13 +101,14 @@ function runtimeState(
   id: string,
   runtime: RuntimeLookup,
 ): PostProcessJobStatus | undefined {
-  const startedAt = runtime.processing.get(id);
-  if (startedAt !== undefined) {
+  const processing = runtime.processing.get(id);
+  if (processing !== undefined) {
     return {
       state: "running",
-      message: "Processing now",
+      message: processing.progress?.label ?? "Processing now",
       retryable: false,
-      updatedAt: startedAt,
+      updatedAt: processing.startedAt,
+      progress: processing.progress,
     };
   }
   const pending = runtime.queued.get(id);
@@ -177,6 +197,13 @@ export function audioJobStatus(
         return {
           state: "no-data",
           message: "No audio stream was available",
+          retryable: scanner.enabled,
+          updatedAt: scan.scannedAt,
+        };
+      case "silent":
+        return {
+          state: "no-data",
+          message: "Audio track contains only silence",
           retryable: scanner.enabled,
           updatedAt: scan.scannedAt,
         };

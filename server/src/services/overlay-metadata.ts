@@ -14,15 +14,10 @@ const SAMPLE_CHECKPOINT_FRACTIONS = Array.from(
   (_, index) => index / 10,
 );
 const SAMPLE_OFFSETS = [0, 0.005, 0.01] as const;
-export const MAX_OVERLAY_OCR_CONCURRENCY = 4;
-
 export function parseOverlayOcrConcurrency(value: string | undefined): number {
   const requested = Number(value);
   if (!Number.isFinite(requested)) return 1;
-  return Math.min(
-    MAX_OVERLAY_OCR_CONCURRENCY,
-    Math.max(1, Math.floor(requested)),
-  );
+  return Math.max(1, Math.floor(requested));
 }
 
 const OCR_CONCURRENCY = parseOverlayOcrConcurrency(
@@ -64,6 +59,18 @@ interface OverlayQueueItem {
   force: boolean;
 }
 
+interface OverlayOcrProgress {
+  current: number;
+  total: number;
+  percent: number;
+  label: string;
+}
+
+interface ActiveOverlayScan {
+  startedAt: number;
+  progress?: OverlayOcrProgress;
+}
+
 export type OverlayScannerState =
   | "checking"
   | "ready"
@@ -72,7 +79,7 @@ export type OverlayScannerState =
 
 const queue: OverlayQueueItem[] = [];
 const queuedIds = new Set<string>();
-const activeScans = new Map<string, number>();
+const activeScans = new Map<string, ActiveOverlayScan>();
 let scannerTimer: NodeJS.Timeout | undefined;
 let scannerState: OverlayScannerState = "checking";
 let scannerMessage = "Checking OCR availability";
@@ -139,7 +146,7 @@ export function getOverlayMetadataScannerStatus() {
     message: scannerMessage,
     limit: OCR_CONCURRENCY,
     extractorVersion: OVERLAY_METADATA_EXTRACTOR_VERSION,
-    processing: [...activeScans].map(([id, startedAt]) => ({ id, startedAt })),
+    processing: [...activeScans].map(([id, scan]) => ({ id, ...scan })),
     queued: queue.map(({ pair, queuedAt }) => ({ id: pair.id, queuedAt })),
     summary: summarizeOverlayMetadataStatuses(pairs),
   };
@@ -379,11 +386,24 @@ async function runTesseract(
 export async function extractOverlayMetadata(
   filePath: string,
   durationSec: number,
+  onProgress?: (progress: OverlayOcrProgress) => void,
 ): Promise<ExtractedOverlayMetadata | undefined> {
+  const sampleTimes = getOverlaySampleTimes(durationSec);
+  const totalWork = sampleTimes.length + 3;
   const candidates: OverlayMetadataCandidate[] = [];
   let successfulSamples = 0;
   let firstError: unknown;
-  for (const frameTimeSec of getOverlaySampleTimes(durationSec)) {
+  const reportProgress = (current: number, label: string) => {
+    onProgress?.({
+      current,
+      total: totalWork,
+      percent: Math.min(100, Math.round((current / totalWork) * 100)),
+      label,
+    });
+  };
+
+  reportProgress(0, `Sampling 0 of ${sampleTimes.length} frames`);
+  for (const [index, frameTimeSec] of sampleTimes.entries()) {
     try {
       const frame = await extractBottomFrame(filePath, frameTimeSec);
       const parsed = parseOverlayTsv(await runTesseract(frame, "tsv"));
@@ -404,11 +424,19 @@ export async function extractOverlayMetadata(
         { error, filePath, frameTimeSec },
         "Overlay OCR sample failed",
       );
+    } finally {
+      reportProgress(
+        index + 1,
+        `Sampling ${index + 1} of ${sampleTimes.length} frames`,
+      );
     }
   }
   if (!successfulSamples && firstError) throw firstError;
   const selected = selectBestOverlayMetadata(candidates);
-  if (!selected) return undefined;
+  if (!selected) {
+    reportProgress(totalWork, "Finalizing OCR result");
+    return undefined;
+  }
 
   const refinementFrames = [...candidates]
     .sort((left, right) => {
@@ -426,8 +454,14 @@ export async function extractOverlayMetadata(
     })
     .slice(0, 3);
   const focusedPlates: Array<{ value: string; frameTimeSec: number }> = [];
-  for (const candidate of refinementFrames) {
-    if (!candidate.plateBounds) continue;
+  for (const [index, candidate] of refinementFrames.entries()) {
+    if (!candidate.plateBounds) {
+      reportProgress(
+        sampleTimes.length + index + 1,
+        `Refining candidate ${index + 1} of ${refinementFrames.length}`,
+      );
+      continue;
+    }
     try {
       const plateFrame = await extractBottomFrame(
         filePath,
@@ -444,6 +478,11 @@ export async function extractOverlayMetadata(
       logger.debug(
         { error, filePath, frameTimeSec: candidate.frameTimeSec },
         "Focused plate OCR sample failed",
+      );
+    } finally {
+      reportProgress(
+        sampleTimes.length + index + 1,
+        `Refining candidate ${index + 1} of ${refinementFrames.length}`,
       );
     }
   }
@@ -477,6 +516,7 @@ export async function extractOverlayMetadata(
     },
     "Selected recording overlay metadata from sampled frames",
   );
+  reportProgress(totalWork, "Finalizing OCR result");
   return selected;
 }
 
@@ -496,10 +536,37 @@ async function scanPair(pair: VideoPair, force = false): Promise<void> {
   }
 
   pair.overlayMetadataStatus = "pending";
+  let lastLoggedProgressBucket = -1;
+  logger.info(
+    {
+      videoId: pair.id,
+      filePath: source.path,
+      durationSec: pair.durationSec ?? 0,
+    },
+    "Starting recording overlay OCR",
+  );
   try {
     const extracted = await extractOverlayMetadata(
       source.path,
       pair.durationSec ?? 0,
+      (progress) => {
+        const activeScan = activeScans.get(pair.id);
+        if (activeScan) activeScan.progress = progress;
+
+        const bucket = Math.floor(progress.percent / 10) * 10;
+        if (bucket <= lastLoggedProgressBucket) return;
+        lastLoggedProgressBucket = bucket;
+        logger.info(
+          {
+            videoId: pair.id,
+            current: progress.current,
+            total: progress.total,
+            percent: progress.percent,
+            progress: progress.label,
+          },
+          "Recording overlay OCR progress",
+        );
+      },
     );
     if (extracted) {
       const stored = upsertRecordingOverlayMetadata({
@@ -537,6 +604,7 @@ async function scanPair(pair: VideoPair, force = false): Promise<void> {
       scannedAt: Date.now(),
     });
     applyStoredMetadata(pair, stored);
+    logger.info({ videoId: pair.id }, "No recording overlay metadata found");
   } catch (error) {
     const stored = upsertRecordingOverlayMetadata({
       videoId: pair.id,
@@ -554,7 +622,7 @@ async function scanPair(pair: VideoPair, force = false): Promise<void> {
 function processQueue(): void {
   while (activeScans.size < OCR_CONCURRENCY && queue.length > 0) {
     const { pair, force } = queue.shift()!;
-    activeScans.set(pair.id, Date.now());
+    activeScans.set(pair.id, { startedAt: Date.now() });
     scanPair(pair, force)
       .catch((error) =>
         logger.warn({ error, videoId: pair.id }, "Overlay scan failed"),
@@ -634,19 +702,6 @@ export async function startOverlayMetadataScanner(
   getPairs: () => VideoPair[],
 ): Promise<void> {
   pairProvider = getPairs;
-  const requestedConcurrency = Number(process.env.OVERLAY_OCR_CONCURRENCY);
-  if (
-    Number.isFinite(requestedConcurrency) &&
-    requestedConcurrency > MAX_OVERLAY_OCR_CONCURRENCY
-  ) {
-    logger.warn(
-      {
-        requestedConcurrency,
-        concurrencyLimit: MAX_OVERLAY_OCR_CONCURRENCY,
-      },
-      "Overlay OCR concurrency was capped",
-    );
-  }
   const initialPairs = getPairs();
   hydratePairsFromCache(initialPairs);
   if (process.env.OVERLAY_OCR_ENABLED === "0") {

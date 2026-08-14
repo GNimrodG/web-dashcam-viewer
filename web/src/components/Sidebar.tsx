@@ -34,6 +34,8 @@ import VideocamIcon from "@mui/icons-material/Videocam";
 import EmergencyRecordingIcon from "@mui/icons-material/EmergencyRecording";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
 import NotificationsActiveIcon from "@mui/icons-material/NotificationsActive";
+import VolumeMuteIcon from "@mui/icons-material/VolumeMute";
+import VolumeOffIcon from "@mui/icons-material/VolumeOff";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import moment from "moment";
 import PairLocation from "./PairLocation";
@@ -85,6 +87,10 @@ function isImportant(pair: VideoPair): boolean {
   return Object.values(pair.channels).some((ch) => ch?.important);
 }
 
+function hasNoPois(pair: VideoPair): boolean {
+  return (pair.poiCount ?? 0) === 0;
+}
+
 function PairOcrStatus({ pair }: Readonly<{ pair: VideoPair }>) {
   const status = getOcrStatusInfo(pair);
   const scannedAt = pair.overlayMetadataScannedAt
@@ -102,6 +108,27 @@ function PairOcrStatus({ pair }: Readonly<{ pair: VideoPair }>) {
   );
 }
 
+function PairAudioStatusIcon({ pair }: Readonly<{ pair: VideoPair }>) {
+  if (pair.audioStatus !== "no-audio" && pair.audioStatus !== "silent") {
+    return null;
+  }
+
+  const noAudioTrack = pair.audioStatus === "no-audio";
+  const label = noAudioTrack
+    ? "Recording has no audio track"
+    : "Recording audio track contains only silence";
+  const Icon = noAudioTrack ? VolumeOffIcon : VolumeMuteIcon;
+  return (
+    <Box
+      component="span"
+      aria-label={label}
+      title={label}
+      sx={{ display: "inline-flex", color: "warning.500" }}>
+      <Icon sx={{ fontSize: "1.1rem" }} />
+    </Box>
+  );
+}
+
 interface SidebarProps {
   selectedPairId?: string;
   onSelectPair?: (pair: VideoPair | null) => void;
@@ -114,6 +141,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
   const { pairs, loading, error, refresh, updatePair } = useVideoPairs();
   const [search, setSearch] = useState("");
   const [importantOnly, setImportantOnly] = useState(false);
+  const [withoutPoisOnly, setWithoutPoisOnly] = useState(false);
   const [isReindexing, setIsReindexing] = useState(false);
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [isBulkGpxUploading, setIsBulkGpxUploading] = useState(false);
@@ -325,7 +353,8 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
   const filteredPairs = useMemo(() => {
     const idSearch = search.trim().replaceAll(/\D/g, "").toLowerCase();
     const placeSearch = search.trim().toLowerCase();
-    const candidates = importantOnly ? pairs.filter(isImportant) : pairs;
+    let candidates = importantOnly ? pairs.filter(isImportant) : pairs;
+    if (withoutPoisOnly) candidates = candidates.filter(hasNoPois);
 
     if (!idSearch && !placeSearch) return candidates;
 
@@ -341,10 +370,14 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
         (placeSearch && p.cameraType?.toLowerCase().includes(placeSearch)) ||
         (placeSearch && p.licensePlate?.toLowerCase().includes(placeSearch)),
     );
-  }, [importantOnly, pairs, search]);
+  }, [importantOnly, pairs, search, withoutPoisOnly]);
 
   const importantPairCount = useMemo(
     () => pairs.filter(isImportant).length,
+    [pairs],
+  );
+  const withoutPoisPairCount = useMemo(
+    () => pairs.filter(hasNoPois).length,
     [pairs],
   );
 
@@ -713,6 +746,20 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
         </Chip>
       </Box>
 
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <Checkbox
+          size="sm"
+          checked={withoutPoisOnly}
+          disabled={withoutPoisPairCount === 0 && !withoutPoisOnly}
+          onChange={(event) => setWithoutPoisOnly(event.target.checked)}
+          label="Recordings without POIs only"
+          sx={{ flex: 1 }}
+        />
+        <Chip size="sm" color="neutral" variant="soft">
+          {withoutPoisPairCount}
+        </Chip>
+      </Box>
+
       {/* Year / Month Bookmarks */}
       {sortedYears.length > 0 && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -1017,6 +1064,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                           <Typography level="title-sm">
                                             {formatPairTime(p)}
                                           </Typography>
+                                          <PairAudioStatusIcon pair={p} />
                                           {!!p.manualPoiCount && (
                                             <Chip
                                               size="sm"

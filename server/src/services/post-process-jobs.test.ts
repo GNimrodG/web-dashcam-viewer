@@ -7,6 +7,7 @@ import {
   gpsJobStatus,
   overlayJobStatus,
 } from "./post-process-jobs.js";
+import { getAudioSourceSignature } from "./audio-events.js";
 
 const emptyRuntime = createRuntimeLookup([], []);
 
@@ -61,6 +62,42 @@ test("queued runtime state takes priority over a completed OCR result", () => {
   assert.equal(status.retryable, false);
 });
 
+test("reports live OCR progress for a running job", () => {
+  const progress = {
+    current: 12,
+    total: 33,
+    percent: 36,
+    label: "Sampling 12 of 30 frames",
+  };
+  const status = overlayJobStatus(
+    pair(),
+    {
+      state: "ready",
+      message: "available",
+      limit: 1,
+      extractorVersion: 2,
+      processing: [],
+      queued: [],
+      summary: {
+        total: 1,
+        notProcessed: 1,
+        pending: 0,
+        found: 0,
+        notFound: 0,
+        failed: 0,
+      },
+    },
+    createRuntimeLookup(
+      [{ id: "20260814_120000", startedAt: 100, progress }],
+      [],
+    ),
+  );
+
+  assert.equal(status.state, "running");
+  assert.equal(status.message, progress.label);
+  assert.deepEqual(status.progress, progress);
+});
+
 test("reports disabled beep detection when no current scan exists", () => {
   const status = audioJobStatus(
     pair(),
@@ -74,6 +111,41 @@ test("reports disabled beep detection when no current scan exists", () => {
     message: "Camera-save beep detection is disabled",
     retryable: false,
   });
+});
+
+test("reports a silent audio track separately from a missing track", () => {
+  const scanner = { enabled: true, limit: 1, processing: [], queued: [] };
+  const videoPair = pair();
+  const sourceSignature = getAudioSourceSignature(videoPair);
+  const silent = audioJobStatus(
+    videoPair,
+    scanner,
+    emptyRuntime,
+    {
+      videoId: "20260814_120000",
+      sourceSignature,
+      detectorVersion: 2,
+      status: "silent",
+      scannedAt: 100,
+    },
+    0,
+  );
+  const noAudio = audioJobStatus(
+    videoPair,
+    scanner,
+    emptyRuntime,
+    {
+      videoId: "20260814_120000",
+      sourceSignature,
+      detectorVersion: 2,
+      status: "no-audio",
+      scannedAt: 100,
+    },
+    0,
+  );
+
+  assert.equal(silent.message, "Audio track contains only silence");
+  assert.equal(noAudio.message, "No audio stream was available");
 });
 
 test("distinguishes GPS data, no-data, and disabled results", () => {

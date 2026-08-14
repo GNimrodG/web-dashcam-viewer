@@ -170,7 +170,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 
 - `INDEX_CONCURRENCY` - Parallel indexing operations (default: `2`)
 - `GPS_CONCURRENT_LIMIT` - Parallel GPS extractions (default: `5`)
-- `OVERLAY_OCR_CONCURRENCY` - Parallel camera/plate OCR scans (default: `1`, maximum: `4`)
+- `OVERLAY_OCR_CONCURRENCY` - Parallel camera/plate OCR scans (default: `1`)
 - `OVERLAY_OCR_ENABLED` - Set to `0` to disable camera/plate OCR (default: enabled)
 - `AUDIO_EVENT_CONCURRENCY` - Parallel background camera-save beep scans (default: `1`)
 - `AUDIO_EVENT_DETECTION_ENABLED` - Set to `0` to disable automatic camera-save beep detection (default: enabled)

@@ -64,6 +64,7 @@ export interface VideoPair {
   poiCount?: number;
   manualPoiCount?: number;
   cameraSavePoiCount?: number;
+  audioStatus?: "pending" | "present" | "silent" | "no-audio" | "failed";
   dashcamTimeZone?: string;
   gpsDisabled?: boolean;
   hasExternalGps?: boolean;
@@ -423,7 +424,11 @@ export interface BackgroundTasksStatus {
     message: string;
     limit: number;
     extractorVersion: number;
-    processing: Array<{ id: string; startedAt: number }>;
+    processing: Array<{
+      id: string;
+      startedAt: number;
+      progress?: PostProcessJobProgress;
+    }>;
     queued: Array<{ id: string; queuedAt: number }>;
     summary: {
       total: number;
@@ -462,6 +467,14 @@ export interface PostProcessJobStatus {
   message: string;
   retryable: boolean;
   updatedAt?: number;
+  progress?: PostProcessJobProgress;
+}
+
+export interface PostProcessJobProgress {
+  current: number;
+  total: number;
+  percent: number;
+  label: string;
 }
 
 export interface RecordingPostProcessJobs {

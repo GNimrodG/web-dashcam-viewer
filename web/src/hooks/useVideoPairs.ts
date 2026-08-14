@@ -47,7 +47,14 @@ export function useVideoPairs(): UseVideoPairsResult {
   }, [refreshToken]);
 
   useEffect(() => {
-    if (!pairs.some((pair) => pair.overlayMetadataStatus === "pending")) return;
+    if (
+      !pairs.some(
+        (pair) =>
+          pair.overlayMetadataStatus === "pending" ||
+          pair.audioStatus === "pending",
+      )
+    )
+      return;
     let canceled = false;
     const timer = globalThis.setTimeout(() => {
       fetchPairs()

@@ -13,8 +13,9 @@ import { canonicalMediaPath } from "../utils/media-path.js";
 import { processManager } from "../utils/process-manager.js";
 import { ffprobe } from "./ffprobe.js";
 
-export const AUDIO_EVENT_DETECTOR_VERSION = 1;
+export const AUDIO_EVENT_DETECTOR_VERSION = 2;
 const SAMPLE_RATE = 8_000;
+const SILENCE_THRESHOLD_DB = -60;
 const WINDOW_SAMPLES = 240;
 const HOP_SAMPLES = 40;
 const TARGET_FREQUENCY_HZ = 2_000;
@@ -168,7 +169,20 @@ export function detectCameraSaveEvents(
   return events;
 }
 
-function pairSourceSignature(pair: VideoPair): string {
+export function isSilentAudio(pcm: Int16Array): boolean {
+  if (pcm.length === 0) return true;
+
+  let sumSquares = 0;
+  for (const sample of pcm) {
+    const normalized = sample / 32768;
+    sumSquares += normalized * normalized;
+  }
+  const rms = Math.sqrt(sumSquares / pcm.length);
+  const rmsDb = 20 * Math.log10(rms || Number.EPSILON);
+  return rmsDb <= SILENCE_THRESHOLD_DB;
+}
+
+export function getAudioSourceSignature(pair: VideoPair): string {
   const sources = Object.entries(pair.channels)
     .filter((entry): entry is [string, VideoFile] => Boolean(entry[1]))
     .map(([channel, file]) => ({
@@ -183,12 +197,35 @@ function pairSourceSignature(pair: VideoPair): string {
 
 export function isRecordingAudioScanCurrent(
   pair: VideoPair,
-  scan = getRecordingAudioScan(pair.id),
+  scan: RecordingAudioScan | undefined,
 ): scan is RecordingAudioScan {
   return Boolean(
     scan?.detectorVersion === AUDIO_EVENT_DETECTOR_VERSION &&
-      scan.sourceSignature === pairSourceSignature(pair),
+      scan.sourceSignature === getAudioSourceSignature(pair),
   );
+}
+
+export type RecordingAudioStatus =
+  | "pending"
+  | "present"
+  | "silent"
+  | "no-audio"
+  | "failed";
+
+export function getRecordingAudioStatus(
+  pair: VideoPair,
+  scan: RecordingAudioScan | undefined,
+  enabled = scannerEnabled,
+): RecordingAudioStatus | undefined {
+  if (isRecordingAudioScanCurrent(pair, scan)) {
+    if (scan.status === "scanned") return "present";
+    return scan.status;
+  }
+
+  const important = Object.values(pair.channels).some(
+    (channel) => channel?.important,
+  );
+  return enabled && important ? "pending" : undefined;
 }
 
 function hasCurrentScan(pair: VideoPair): boolean {
@@ -270,7 +307,7 @@ async function extractMonoPcm(
 async function scanPair(pair: VideoPair, force = false): Promise<VideoPoi[]> {
   if (!force && hasCurrentScan(pair)) return getAllVideoPois(pair.id);
 
-  const sourceSignature = pairSourceSignature(pair);
+  const sourceSignature = getAudioSourceSignature(pair);
   const scannedAt = Date.now();
   try {
     const source = await findAudioSource(pair);
@@ -288,9 +325,26 @@ async function scanPair(pair: VideoPair, force = false): Promise<VideoPoi[]> {
       return getAllVideoPois(pair.id);
     }
 
-    const eventTimes = detectCameraSaveEvents(
-      await extractMonoPcm(source, pair.durationSec ?? source.durationSec ?? 0),
+    const pcm = await extractMonoPcm(
+      source,
+      pair.durationSec ?? source.durationSec ?? 0,
     );
+    if (isSilentAudio(pcm)) {
+      replaceRecordingAudioEvents(
+        {
+          videoId: pair.id,
+          sourceSignature,
+          detectorVersion: AUDIO_EVENT_DETECTOR_VERSION,
+          status: "silent",
+          scannedAt,
+        },
+        [],
+      );
+      logger.info({ videoId: pair.id }, "Recording audio track is silent");
+      return getAllVideoPois(pair.id);
+    }
+
+    const eventTimes = detectCameraSaveEvents(pcm);
     const events = eventTimes.map(
       (timeSec): VideoPoi => ({
         id: `audio-camera-save-${pair.id}-${Math.round(timeSec * 1000)}`,

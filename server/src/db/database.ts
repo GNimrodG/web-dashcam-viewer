@@ -32,7 +32,7 @@ export interface RecordingAudioScan {
   videoId: string;
   sourceSignature: string;
   detectorVersion: number;
-  status: "scanned" | "no-audio" | "failed";
+  status: "scanned" | "silent" | "no-audio" | "failed";
   scannedAt: number;
 }
 
