@@ -11,10 +11,13 @@ import {
   deleteVideoPoi,
   getVideoPoiCount,
   getVideoPoiCounts,
+  getVideoPoiTypeCounts,
+  getVideoPoiTypeCountsMap,
   getVideoPois,
   getAllVideoPois,
   getAllVideoPoisMap,
   getRecordingAudioScan,
+  getRecordingAudioScans,
   getRecordingTimeZone,
   getRecordingTimeZones,
   getRecordingStartTime,
@@ -91,6 +94,21 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       scannedAt: 100,
     });
     assert.deepEqual(
+      [...getRecordingAudioScans()],
+      [
+        [
+          "recording-a",
+          {
+            videoId: "recording-a",
+            sourceSignature: "source-v1",
+            detectorVersion: 1,
+            status: "scanned",
+            scannedAt: 100,
+          },
+        ],
+      ],
+    );
+    assert.deepEqual(
       getAllVideoPois("recording-a").map((poi) => [poi.id, poi.kind]),
       [
         ["later", "manual"],
@@ -100,6 +118,15 @@ test("persists, orders, and deletes video POIs within their recording", () => {
     assert.equal(getAllVideoPoisMap().get("recording-a")?.length, 2);
     assert.equal(getVideoPoiCount("recording-a"), 2);
     assert.deepEqual([...getVideoPoiCounts()], [["recording-a", 2]]);
+    assert.deepEqual(getVideoPoiTypeCounts("recording-a"), {
+      total: 2,
+      manual: 1,
+      cameraSave: 1,
+    });
+    assert.deepEqual(
+      [...getVideoPoiTypeCountsMap()],
+      [["recording-a", { total: 2, manual: 1, cameraSave: 1 }]],
+    );
     assert.equal(deleteVideoPoi("recording-a", "automatic-save"), false);
 
     assert.equal(getRecordingTimeZone("recording-a"), undefined);
@@ -148,6 +175,8 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       sourceMtimeMs: 1234,
       extractorVersion: 1,
       status: "found",
+      ocrStatus: "found",
+      overridden: false,
       scannedAt: 5678,
       frameTimeSec: 30,
     });
@@ -180,9 +209,34 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       sourceMtimeMs: 2345,
       extractorVersion: 2,
       status: "found",
+      ocrStatus: "found",
+      overridden: true,
       scannedAt: 6789,
       frameTimeSec: 60,
     });
+
+    const manualOnly = setRecordingOverlayMetadataCorrection({
+      videoId: "recording-b",
+      cameraType: "Manually entered camera",
+      sourcePath: "RO/recording-b.mp4",
+      sourceMtimeMs: 3456,
+      extractorVersion: 2,
+    });
+    assert.equal(manualOnly.overridden, true);
+    assert.equal(manualOnly.ocrStatus, undefined);
+
+    upsertRecordingOverlayMetadata({
+      videoId: "recording-b",
+      sourcePath: "RO/recording-b.mp4",
+      sourceMtimeMs: 3456,
+      extractorVersion: 2,
+      status: "not-found",
+      scannedAt: 7890,
+    });
+    const scannedAfterCorrection = getRecordingOverlayMetadata("recording-b");
+    assert.equal(scannedAfterCorrection?.cameraType, "Manually entered camera");
+    assert.equal(scannedAfterCorrection?.ocrStatus, "not-found");
+    assert.equal(scannedAfterCorrection?.overridden, true);
 
     closeDatabase();
     initDatabase(mediaDir);
@@ -233,6 +287,10 @@ test("migrates existing overlay metadata before saving corrections", () => {
       getRecordingOverlayMetadata("recording-a")?.cameraType,
       "Legacy camera",
     );
+    assert.equal(
+      getRecordingOverlayMetadata("recording-a")?.ocrStatus,
+      "found",
+    );
     setRecordingOverlayMetadataCorrection({
       videoId: "recording-a",
       cameraType: "Corrected camera",
@@ -244,6 +302,7 @@ test("migrates existing overlay metadata before saving corrections", () => {
       getRecordingOverlayMetadata("recording-a")?.cameraType,
       "Corrected camera",
     );
+    assert.equal(getRecordingOverlayMetadata("recording-a")?.overridden, true);
   } finally {
     closeDatabase();
     rmSync(mediaDir, { recursive: true, force: true });

@@ -50,6 +50,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import Input from "@mui/joy/Input";
 import LinearProgress from "@mui/joy/LinearProgress";
+import Chip from "@mui/joy/Chip";
 import {
   clampPlaybackTime,
   FRAME_STEP_SECONDS,
@@ -67,6 +68,7 @@ import {
   type ClipChannelMode,
   type PipCorner,
 } from "../utils/clip-layout";
+import { getOcrStatusInfo } from "../utils/ocr-status";
 
 interface PreviewFrameSet {
   front?: HTMLCanvasElement;
@@ -815,6 +817,13 @@ export function Player({
       </Box>
     );
 
+  const ocrStatus = getOcrStatusInfo(pair);
+  const ocrStatusTitle = `${ocrStatus.description}${
+    pair.overlayMetadataScannedAt
+      ? ` Last OCR run: ${new Date(pair.overlayMetadataScannedAt).toLocaleString()}.`
+      : ""
+  }`;
+
   return (
     <Stack direction="column" sx={{ width: "100%", height: "100%" }}>
       <Stack spacing={0} sx={{ width: "100%" }} direction="column">
@@ -974,6 +983,14 @@ export function Player({
                       .join(" · ")}
                   </Typography>
                 )}
+                <Chip
+                  size="sm"
+                  variant="soft"
+                  color={ocrStatus.color}
+                  title={ocrStatusTitle}
+                  sx={{ alignSelf: "flex-start", mt: 0.25 }}>
+                  {ocrStatus.label}
+                </Chip>
               </Stack>
               <IconButton
                 aria-label="Edit camera type and vehicle license plate"
@@ -982,7 +999,7 @@ export function Player({
                 variant="plain"
                 color="neutral"
                 onClick={() => setShowMetadataDialog(true)}>
-                <EditOutlinedIcon fontSize="small" />
+                <EditOutlinedIcon sx={{ fontSize: "1.25rem" }} />
               </IconButton>
             </Stack>
           </Stack>
@@ -1301,8 +1318,11 @@ export function Player({
                         color="neutral"
                         startDecorator={
                           <LocationOnIcon
-                            color={
-                              poi.kind === "camera-save" ? "error" : "warning"
+                            color="warning"
+                            sx={
+                              poi.kind === "camera-save"
+                                ? { color: "danger.500" }
+                                : undefined
                             }
                           />
                         }

@@ -88,7 +88,7 @@ export default function MapView({
         onPairUpdated?.(result.pair);
         refresh();
         setGpsDeleteDialogOpen(false);
-        if (mode === "external" && !result.hasGps) {
+        if (mode === "external" && "hasGps" in result && !result.hasGps) {
           globalThis.alert(
             "The external GPX was removed, but no embedded GPS data was found in this recording.",
           );

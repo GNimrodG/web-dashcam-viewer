@@ -26,7 +26,11 @@ import {
   type ClipChannelMode,
   type PipCorner,
 } from "../services/clipper.js";
-import { getClipJob, startClipJob } from "../services/clip-jobs.js";
+import {
+  getClipJob,
+  getClipJobs,
+  startClipJob,
+} from "../services/clip-jobs.js";
 import { generateGPX } from "../services/gpx.js";
 import { saveRecordedGpxTrack } from "../services/gps.js";
 import { ensureThumbnail, getThumbnailPath } from "../services/thumbnail.js";
@@ -48,15 +52,25 @@ import {
   createVideoPoi,
   deleteVideoPoi,
   getAllVideoPois,
-  getVideoPoiCount,
-  getVideoPoiCounts,
+  getVideoPoiTypeCounts,
+  getVideoPoiTypeCountsMap,
+  type VideoPoiTypeCounts,
   getRecordingTimeZone,
   getRecordingTimeZones,
   deleteRecordingStartTime,
   setRecordingStartTime,
   setRecordingTimeZone,
 } from "../db/database.js";
-import { ensureRecordingAudioEvents } from "../services/audio-events.js";
+import {
+  ensureRecordingAudioEvents,
+  getAudioEventScannerStatus,
+} from "../services/audio-events.js";
+import { getOverlayMetadataScannerStatus } from "../services/overlay-metadata.js";
+import {
+  getRecordingPostProcessJobs,
+  retryRecordingPostProcesses,
+  type PostProcessKind,
+} from "../services/post-process-jobs.js";
 import { randomUUID } from "node:crypto";
 import { IANAZone } from "luxon";
 import { parseDashcamPairIdTimeIso } from "../utils/dashcam-time.js";
@@ -71,24 +85,41 @@ import type { Channel } from "../types.js";
 
 const router = Router();
 
+function isPostProcessRequest(
+  value: unknown,
+): value is PostProcessKind | "all" {
+  return (
+    value === "overlay-ocr" ||
+    value === "audio-events" ||
+    value === "gps-extraction" ||
+    value === "all"
+  );
+}
+
 function serializePair(
   pair: NonNullable<ReturnType<typeof getVideoPairById>>,
-  poiCount = getVideoPoiCount(pair.id),
+  poiCounts: VideoPoiTypeCounts = getVideoPoiTypeCounts(pair.id),
   timeZone = getRecordingTimeZone(pair.id) || config.DASHCAM_TIME_ZONE,
 ) {
-  return { ...pair, poiCount, dashcamTimeZone: timeZone };
+  return {
+    ...pair,
+    poiCount: poiCounts.total,
+    manualPoiCount: poiCounts.manual,
+    cameraSavePoiCount: poiCounts.cameraSave,
+    dashcamTimeZone: timeZone,
+  };
 }
 
 // List pairs
 router.get("/", (_req, res) => {
   const pairs = getVideoPairs();
-  const poiCounts = getVideoPoiCounts();
+  const poiCounts = getVideoPoiTypeCountsMap();
   const timeZones = getRecordingTimeZones();
   res.json(
     pairs.map((pair) =>
       serializePair(
         pair,
-        poiCounts.get(pair.id) ?? 0,
+        poiCounts.get(pair.id) ?? { total: 0, manual: 0, cameraSave: 0 },
         timeZones.get(pair.id) || config.DASHCAM_TIME_ZONE,
       ),
     ),
@@ -99,6 +130,44 @@ router.get("/", (_req, res) => {
 router.get("/locations", (_req, res) => {
   const locations = getAllUniqueLocations();
   res.json(locations);
+});
+
+router.get("/background-tasks", (_req, res) => {
+  const overlayOcr = getOverlayMetadataScannerStatus();
+  const gpsExtraction = getGpsExtractionQueueStatus();
+  const audioEvents = getAudioEventScannerStatus();
+  res.json({
+    generatedAt: Date.now(),
+    overlayOcr,
+    gpsExtraction,
+    audioEvents,
+    clipJobs: getClipJobs(),
+    recordings: getRecordingPostProcessJobs({
+      overlay: overlayOcr,
+      audio: audioEvents,
+      gps: gpsExtraction,
+    }),
+  });
+});
+
+router.post("/background-tasks/:id/retry", (req, res) => {
+  const requested = getAny(req.body, "job");
+  if (!isPostProcessRequest(requested)) {
+    return res.status(400).json({ error: "Unsupported post-process job" });
+  }
+  try {
+    const results = retryRecordingPostProcesses(req.params.id, requested);
+    const selectedResults =
+      requested === "all" ? Object.values(results) : [results[requested]];
+    const accepted = selectedResults.some((result) => result.accepted);
+    res.status(accepted ? 202 : 409).json({ accepted, results });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Could not queue jobs";
+    res.status(message === "Video pair not found" ? 404 : 500).json({
+      error: message,
+    });
+  }
 });
 
 // Update pair location manually

@@ -136,9 +136,9 @@ const GpsQueueModal: FunctionComponent<GpsQueueModalProps> = ({
                   </tr>
                 </thead>
                 <tbody>
-                  {status.processing.map((id) => (
-                    <tr key={`processing-${id}`}>
-                      <td>{formatPairId(id)}</td>
+                  {status.processing.map((item) => (
+                    <tr key={`processing-${item.id}`}>
+                      <td>{formatPairId(item.id)}</td>
                       <td>
                         <Box
                           sx={{
@@ -152,7 +152,7 @@ const GpsQueueModal: FunctionComponent<GpsQueueModalProps> = ({
                           </Chip>
                         </Box>
                       </td>
-                      <td>-</td>
+                      <td>{moment(item.startedAt).fromNow()}</td>
                     </tr>
                   ))}
                   {status.queued.map((item, index) => (

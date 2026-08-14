@@ -12,6 +12,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - **HTTP range streaming** for efficient video delivery
 - **Cross-platform path handling** (Windows/Linux compatible)
 - **Camera and license plate OCR** from the recording's on-video overlay
+- **Per-recording OCR status** that distinguishes pending, completed, no-match, failed, and never-processed recordings
 - **Automatic recording-save detection** from the camera's audio beep pattern
 
 ### GPS & Location
@@ -57,6 +58,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - **Grouped timeline view** by date
 - **Search and filter** by location or date
 - **Important recording markers**
+- **Per-recording post-processing job manager** for OCR, GPS extraction, and beep detection, with live states, filtering, and retry controls
 
 ## Prerequisites
 
@@ -171,7 +173,8 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `OVERLAY_OCR_ENABLED` - Set to `0` to disable camera/plate OCR (default: enabled)
 - `AUDIO_EVENT_CONCURRENCY` - Parallel background camera-save beep scans (default: `1`)
 - `AUDIO_EVENT_DETECTION_ENABLED` - Set to `0` to disable automatic camera-save beep detection (default: enabled)
-- `IND Reference
+
+## API Reference
 
 ### Videos
 
@@ -184,6 +187,8 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `DELETE /api/videos/:id/gps/gpx` - Remove an external GPX and restore embedded GPS
 - `POST /api/videos/gps/gpx/bulk` - Apply one GPX file to every overlapping recording
 - `GET /api/videos/gps-queue-status` - Real-time GPS queue status (SSE)
+- `GET /api/videos/background-tasks` - Current OCR, GPS, audio detection, and clip-generation task status
+- `POST /api/videos/background-tasks/:id/retry` - Re-run one or all post-processors for a recording
 - `GET /api/videos/locations` - Get unique cities/countries for autocomplete
 - `GET /api/videos/clips` - List generated clips
 - `GET /api/videos/clips/:filename` - Stream a generated clip

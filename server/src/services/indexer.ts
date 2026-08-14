@@ -624,6 +624,11 @@ export function updatePairOverlayMetadata(
   pair.cameraType = metadata.cameraType;
   pair.licensePlate = metadata.licensePlate;
   pair.overlayMetadataStatus = metadata.status;
+  pair.overlayMetadataOcrStatus = metadata.ocrStatus;
+  pair.overlayMetadataOverridden = metadata.overridden;
+  pair.overlayMetadataScannedAt = metadata.scannedAt;
+  pair.overlayMetadataExtractorVersion = metadata.extractorVersion;
+  pair.overlayMetadataFrameTimeSec = metadata.frameTimeSec;
   scheduleSave();
   return pair;
 }
@@ -771,7 +776,15 @@ const gpsExtractionQueue: Array<{
   reject: (reason?: any) => void;
   queuedAt: number;
 }> = [];
-const processingGpsExtractions = new Set<string>();
+const processingGpsExtractions = new Map<string, number>();
+const recentGpsExtractionResults = new Map<
+  string,
+  {
+    state: "completed" | "no-data" | "failed";
+    finishedAt: number;
+    error?: string;
+  }
+>();
 
 async function updatePairLocationsFromGps(
   pair: VideoPair,
@@ -846,7 +859,8 @@ function startGpsExtraction(
   updateLocations: boolean,
 ): Promise<{ front?: GpsPoint[]; rear?: GpsPoint[] }> {
   currentGpsExtractions++;
-  processingGpsExtractions.add(id);
+  processingGpsExtractions.set(id, Date.now());
+  recentGpsExtractionResults.delete(id);
   logger.info(
     `Starting GPS extraction for pair: ${id} (${currentGpsExtractions}/${GPS_CONCURRENT_LIMIT})`,
   );
@@ -957,6 +971,23 @@ function startGpsExtraction(
       processNextInQueue();
     }
   })();
+
+  void p.then(
+    (result) => {
+      recentGpsExtractionResults.set(id, {
+        state:
+          result.front?.length || result.rear?.length ? "completed" : "no-data",
+        finishedAt: Date.now(),
+      });
+    },
+    (error) => {
+      recentGpsExtractionResults.set(id, {
+        state: "failed",
+        finishedAt: Date.now(),
+        error: error instanceof Error ? error.message : "GPS extraction failed",
+      });
+    },
+  );
 
   gpsTrackPromises.set(id, p);
   return p;
@@ -1120,12 +1151,45 @@ export function streamVideo(
 export function getGpsExtractionQueueStatus() {
   return {
     limit: GPS_CONCURRENT_LIMIT,
-    processing: Array.from(processingGpsExtractions),
+    processing: [...processingGpsExtractions].map(([id, startedAt]) => ({
+      id,
+      startedAt,
+    })),
     queued: gpsExtractionQueue.map((item) => ({
       id: item.id,
       queuedAt: item.queuedAt,
     })),
   };
+}
+
+export function getRecentGpsExtractionResult(id: string) {
+  return recentGpsExtractionResults.get(id);
+}
+
+export function retryGpsExtractionForPair(
+  id: string,
+): Promise<{ front?: GpsPoint[]; rear?: GpsPoint[] }> {
+  const pair = getVideoPairById(id);
+  if (!pair) throw new Error("Video pair not found");
+  if (pair.gpsDisabled || isRecordedGpsDisabled(MEDIA_DIR, id)) {
+    throw new Error("GPS is disabled for this recording");
+  }
+  if (
+    gpsTrackPromises.has(id) ||
+    gpsExtractionQueue.some((item) => item.id === id)
+  ) {
+    return getGpsTrackForPair(id);
+  }
+
+  for (const channel of Object.values(pair.channels)) {
+    if (!channel) continue;
+    if (!pair.hasExternalGps) deleteGpsCache(channel.path);
+    channel.noGps = undefined;
+    channel.gpsExtractionVersion = undefined;
+  }
+  recentGpsExtractionResults.delete(id);
+  scheduleSave();
+  return getGpsTrackForPair(id);
 }
 
 export function updatePairLocation(

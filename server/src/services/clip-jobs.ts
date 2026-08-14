@@ -78,3 +78,10 @@ export function getClipJob(id: string): ClipJobStatus | undefined {
   pruneExpiredJobs();
   return jobs.get(id);
 }
+
+export function getClipJobs(): ClipJobStatus[] {
+  pruneExpiredJobs();
+  return [...jobs.values()].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt),
+  );
+}

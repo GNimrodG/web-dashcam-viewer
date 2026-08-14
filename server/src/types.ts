@@ -32,6 +32,8 @@ export interface VideoPair {
   endState?: string;
   endCity?: string;
   poiCount?: number;
+  manualPoiCount?: number;
+  cameraSavePoiCount?: number;
   dashcamTimeZone?: string;
   gpsDisabled?: boolean;
   hasExternalGps?: boolean;
@@ -39,6 +41,11 @@ export interface VideoPair {
   cameraType?: string;
   licensePlate?: string;
   overlayMetadataStatus?: "pending" | "found" | "not-found" | "failed";
+  overlayMetadataOcrStatus?: "found" | "not-found" | "failed";
+  overlayMetadataOverridden?: boolean;
+  overlayMetadataScannedAt?: number;
+  overlayMetadataExtractorVersion?: number;
+  overlayMetadataFrameTimeSec?: number;
 }
 
 export interface GpsPoint {

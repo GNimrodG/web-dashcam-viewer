@@ -33,12 +33,14 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import EmergencyRecordingIcon from "@mui/icons-material/EmergencyRecording";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
+import NotificationsActiveIcon from "@mui/icons-material/NotificationsActive";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import moment from "moment";
 import PairLocation from "./PairLocation";
 import GpsOffIcon from "@mui/icons-material/GpsOff";
 import Chip from "@mui/joy/Chip";
-import GpsQueueModal from "./GpsQueueModal";
+import BackgroundTasksModal from "./BackgroundTasksModal";
+import PendingActionsIcon from "@mui/icons-material/PendingActions";
 import SetLocationModal from "./SetLocationModal";
 import EditLocationIcon from "@mui/icons-material/EditLocation";
 import {
@@ -72,6 +74,7 @@ import {
   getPairDisplayDate,
   getPairStartTime,
 } from "../utils/recording-time";
+import { getOcrStatusInfo } from "../utils/ocr-status";
 
 /**
  * Check if a pair is important (has at least one important channel)
@@ -80,6 +83,23 @@ import {
  */
 function isImportant(pair: VideoPair): boolean {
   return Object.values(pair.channels).some((ch) => ch?.important);
+}
+
+function PairOcrStatus({ pair }: Readonly<{ pair: VideoPair }>) {
+  const status = getOcrStatusInfo(pair);
+  const scannedAt = pair.overlayMetadataScannedAt
+    ? ` Last OCR run: ${moment(pair.overlayMetadataScannedAt).format("LLL")}.`
+    : "";
+
+  return (
+    <Typography
+      level="body-xs"
+      color={status.color}
+      noWrap
+      title={`${status.description}${scannedAt}`}>
+      {status.label}
+    </Typography>
+  );
 }
 
 interface SidebarProps {
@@ -108,7 +128,8 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
   } | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [authEnabled, setAuthEnabled] = useState(false);
-  const [gpsQueueModalOpen, setGpsQueueModalOpen] = useState(false);
+  const [backgroundTasksModalOpen, setBackgroundTasksModalOpen] =
+    useState(false);
   const [locationModalOpen, setLocationModalOpen] = useState(false);
   const [selectedPairForLocation, setSelectedPairForLocation] =
     useState<VideoPair | null>(null);
@@ -457,9 +478,9 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
           <UploadFileIcon sx={{ mr: 1 }} />
           {isBulkGpxUploading ? "Applying GPX..." : "Apply GPX to recordings"}
         </MenuItem>
-        <MenuItem onClick={() => setGpsQueueModalOpen(true)}>
-          <GpsOffIcon sx={{ mr: 1 }} />
-          GPS Extraction Queue
+        <MenuItem onClick={() => setBackgroundTasksModalOpen(true)}>
+          <PendingActionsIcon sx={{ mr: 1 }} />
+          Post-processing jobs
         </MenuItem>
         <MenuItem onClick={refresh} disabled={loading}>
           <RefreshIcon sx={{ mr: 1 }} />
@@ -996,7 +1017,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                           <Typography level="title-sm">
                                             {formatPairTime(p)}
                                           </Typography>
-                                          {!!p.poiCount && (
+                                          {!!p.manualPoiCount && (
                                             <Chip
                                               size="sm"
                                               color="warning"
@@ -1006,10 +1027,26 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                                   sx={{ fontSize: "0.9rem" }}
                                                 />
                                               }
-                                              aria-label={`${p.poiCount} point${p.poiCount === 1 ? "" : "s"} of interest`}
-                                              title={`${p.poiCount} point${p.poiCount === 1 ? "" : "s"} of interest`}
+                                              aria-label={`${p.manualPoiCount} manually marked point${p.manualPoiCount === 1 ? "" : "s"} of interest`}
+                                              title={`${p.manualPoiCount} manually marked point${p.manualPoiCount === 1 ? "" : "s"} of interest`}
                                               sx={{ minHeight: 20 }}>
-                                              {p.poiCount}
+                                              {p.manualPoiCount}
+                                            </Chip>
+                                          )}
+                                          {!!p.cameraSavePoiCount && (
+                                            <Chip
+                                              size="sm"
+                                              color="danger"
+                                              variant="soft"
+                                              startDecorator={
+                                                <NotificationsActiveIcon
+                                                  sx={{ fontSize: "0.9rem" }}
+                                                />
+                                              }
+                                              aria-label={`${p.cameraSavePoiCount} detected camera saving beep event${p.cameraSavePoiCount === 1 ? "" : "s"}`}
+                                              title={`${p.cameraSavePoiCount} detected camera saving beep event${p.cameraSavePoiCount === 1 ? "" : "s"}`}
+                                              sx={{ minHeight: 20 }}>
+                                              {p.cameraSavePoiCount}
                                             </Chip>
                                           )}
                                           {(!p.channels.front ||
@@ -1066,6 +1103,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                               .join(" · ")}
                                           </Typography>
                                         )}
+                                        <PairOcrStatus pair={p} />
                                         <PairLocation pair={p} />
                                       </ListItemContent>
                                     </ListItemButton>
@@ -1083,9 +1121,10 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
         </List>
       </Box>
 
-      <GpsQueueModal
-        open={gpsQueueModalOpen}
-        onClose={() => setGpsQueueModalOpen(false)}
+      <BackgroundTasksModal
+        open={backgroundTasksModalOpen}
+        onClose={() => setBackgroundTasksModalOpen(false)}
+        onRefreshRecordings={() => void refresh()}
       />
 
       <SetLocationModal

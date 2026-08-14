@@ -4,6 +4,7 @@ import {
   getAllVideoPois,
   getRecordingAudioScan,
   replaceRecordingAudioEvents,
+  type RecordingAudioScan,
   type VideoPoi,
 } from "../db/database.js";
 import { logger } from "../logger.js";
@@ -31,6 +32,8 @@ interface TonePulse {
 
 interface ScanJob {
   pair: VideoPair;
+  queuedAt: number;
+  force: boolean;
   resolve: (pois: VideoPoi[]) => void;
   reject: (error: unknown) => void;
 }
@@ -38,8 +41,25 @@ interface ScanJob {
 const queue: ScanJob[] = [];
 const jobsById = new Map<string, ScanJob>();
 const activeScans = new Map<string, Promise<VideoPoi[]>>();
+const activeScanStartedAt = new Map<string, number>();
 let activeCount = 0;
 let scannerTimer: NodeJS.Timeout | undefined;
+let scannerEnabled = process.env.AUDIO_EVENT_DETECTION_ENABLED !== "0";
+
+export function getAudioEventScannerStatus() {
+  return {
+    enabled: scannerEnabled,
+    limit: AUDIO_EVENT_CONCURRENCY,
+    processing: [...activeScanStartedAt].map(([id, startedAt]) => ({
+      id,
+      startedAt,
+    })),
+    queued: queue.map((job) => ({
+      id: job.pair.id,
+      queuedAt: job.queuedAt,
+    })),
+  };
+}
 
 function goertzelPower(
   pcm: Int16Array,
@@ -161,14 +181,20 @@ function pairSourceSignature(pair: VideoPair): string {
   return createHash("sha256").update(JSON.stringify(sources)).digest("hex");
 }
 
-function hasCurrentScan(pair: VideoPair): boolean {
-  const scan = getRecordingAudioScan(pair.id);
+export function isRecordingAudioScanCurrent(
+  pair: VideoPair,
+  scan = getRecordingAudioScan(pair.id),
+): scan is RecordingAudioScan {
   return Boolean(
     scan &&
-      scan.status !== "failed" &&
       scan.detectorVersion === AUDIO_EVENT_DETECTOR_VERSION &&
       scan.sourceSignature === pairSourceSignature(pair),
   );
+}
+
+function hasCurrentScan(pair: VideoPair): boolean {
+  const scan = getRecordingAudioScan(pair.id);
+  return isRecordingAudioScanCurrent(pair, scan) && scan.status !== "failed";
 }
 
 async function findAudioSource(
@@ -242,8 +268,8 @@ async function extractMonoPcm(
   );
 }
 
-async function scanPair(pair: VideoPair): Promise<VideoPoi[]> {
-  if (hasCurrentScan(pair)) return getAllVideoPois(pair.id);
+async function scanPair(pair: VideoPair, force = false): Promise<VideoPoi[]> {
+  if (!force && hasCurrentScan(pair)) return getAllVideoPois(pair.id);
 
   const sourceSignature = pairSourceSignature(pair);
   const scannedAt = Date.now();
@@ -315,11 +341,13 @@ function processQueue(): void {
     const job = queue.shift()!;
     jobsById.delete(job.pair.id);
     activeCount++;
-    const promise = scanPair(job.pair);
+    const promise = scanPair(job.pair, job.force);
     activeScans.set(job.pair.id, promise);
+    activeScanStartedAt.set(job.pair.id, Date.now());
     promise.then(job.resolve, job.reject).finally(() => {
       activeCount--;
       activeScans.delete(job.pair.id);
+      activeScanStartedAt.delete(job.pair.id);
       processQueue();
     });
   }
@@ -328,12 +356,16 @@ function processQueue(): void {
 function enqueuePair(
   pair: VideoPair,
   prioritize: boolean,
+  force = false,
 ): Promise<VideoPoi[]> {
-  if (hasCurrentScan(pair)) return Promise.resolve(getAllVideoPois(pair.id));
+  if (!force && hasCurrentScan(pair)) {
+    return Promise.resolve(getAllVideoPois(pair.id));
+  }
   const active = activeScans.get(pair.id);
   if (active) return active;
   const existing = jobsById.get(pair.id);
   if (existing) {
+    existing.force ||= force;
     if (prioritize) {
       const index = queue.indexOf(existing);
       if (index > 0) {
@@ -356,7 +388,7 @@ function enqueuePair(
   }
 
   const promise = new Promise<VideoPoi[]>((resolve, reject) => {
-    const job = { pair, resolve, reject };
+    const job = { pair, queuedAt: Date.now(), force, resolve, reject };
     jobsById.set(pair.id, job);
     if (prioritize) queue.unshift(job);
     else queue.push(job);
@@ -372,6 +404,15 @@ export function ensureRecordingAudioEvents(
     return Promise.resolve(getAllVideoPois(pair.id));
   }
   return enqueuePair(pair, true);
+}
+
+export function retryRecordingAudioEvents(
+  pair: VideoPair,
+): Promise<VideoPoi[]> {
+  if (!scannerEnabled) {
+    throw new Error("Camera-save beep detection is disabled");
+  }
+  return enqueuePair(pair, true, true);
 }
 
 function enqueueUnscannedPairs(pairs: readonly VideoPair[]): void {
@@ -391,9 +432,11 @@ function enqueueUnscannedPairs(pairs: readonly VideoPair[]): void {
 
 export function startAudioEventScanner(getPairs: () => VideoPair[]): void {
   if (process.env.AUDIO_EVENT_DETECTION_ENABLED === "0") {
+    scannerEnabled = false;
     logger.info("Camera save beep detection is disabled");
     return;
   }
+  scannerEnabled = true;
   enqueueUnscannedPairs(getPairs());
   scannerTimer = setInterval(() => enqueueUnscannedPairs(getPairs()), 30_000);
   scannerTimer.unref();

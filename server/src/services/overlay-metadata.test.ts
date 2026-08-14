@@ -2,10 +2,45 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   getOverlaySampleTimes,
+  summarizeOverlayMetadataStatuses,
   type OverlayMetadataCandidate,
   parseOverlayTsv,
   selectBestOverlayMetadata,
 } from "./overlay-metadata.js";
+import type { VideoPair } from "../types.js";
+
+function statusPair(
+  id: string,
+  status?: VideoPair["overlayMetadataStatus"],
+  ocrStatus?: VideoPair["overlayMetadataOcrStatus"],
+): VideoPair {
+  return {
+    id,
+    channels: {},
+    overlayMetadataStatus: status,
+    overlayMetadataOcrStatus: ocrStatus,
+  };
+}
+
+test("distinguishes recordings that were never processed from completed OCR results", () => {
+  assert.deepEqual(
+    summarizeOverlayMetadataStatuses([
+      statusPair("never-run"),
+      statusPair("queued", "pending"),
+      statusPair("found", "found", "found"),
+      statusPair("no-match", "not-found", "not-found"),
+      statusPair("failed", "failed", "failed"),
+    ]),
+    {
+      total: 5,
+      notProcessed: 1,
+      pending: 1,
+      found: 1,
+      notFound: 1,
+      failed: 1,
+    },
+  );
+});
 
 test("extracts camera type and plate from the spatial middle overlay block", () => {
   const header =

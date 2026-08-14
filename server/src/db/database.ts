@@ -22,6 +22,12 @@ export interface VideoPoi {
   kind?: "manual" | "camera-save";
 }
 
+export interface VideoPoiTypeCounts {
+  total: number;
+  manual: number;
+  cameraSave: number;
+}
+
 export interface RecordingAudioScan {
   videoId: string;
   sourceSignature: string;
@@ -38,19 +44,22 @@ export interface RecordingOverlayMetadata {
   sourceMtimeMs: number;
   extractorVersion: number;
   status: "found" | "not-found" | "failed";
+  ocrStatus?: "found" | "not-found" | "failed";
+  overridden?: boolean;
   scannedAt: number;
   frameTimeSec?: number;
 }
 
 type RecordingOverlayMetadataRow = Omit<
   RecordingOverlayMetadata,
-  "cameraType" | "licensePlate" | "frameTimeSec"
+  "cameraType" | "licensePlate" | "frameTimeSec" | "ocrStatus" | "overridden"
 > & {
   cameraType: string | null;
   licensePlate: string | null;
   cameraTypeOverride: string | null;
   licensePlateOverride: string | null;
   metadataOverridden: number;
+  ocrStatus: "found" | "not-found" | "failed" | null;
   frameTimeSec: number | null;
 };
 
@@ -63,6 +72,7 @@ function mapRecordingOverlayMetadataRow(
     cameraTypeOverride,
     licensePlateOverride,
     metadataOverridden,
+    ocrStatus,
     frameTimeSec,
     ...metadata
   } = row;
@@ -82,6 +92,8 @@ function mapRecordingOverlayMetadataRow(
         ? "found"
         : "not-found"
       : metadata.status,
+    ocrStatus: ocrStatus ?? undefined,
+    overridden: Boolean(metadataOverridden),
     frameTimeSec: frameTimeSec ?? undefined,
   };
 }
@@ -184,7 +196,8 @@ export function initDatabase(mediaDir: string) {
       frame_time_sec REAL,
       camera_type_override TEXT,
       license_plate_override TEXT,
-      metadata_overridden INTEGER NOT NULL DEFAULT 0
+      metadata_overridden INTEGER NOT NULL DEFAULT 0,
+      ocr_status TEXT
     )
   `);
 
@@ -210,6 +223,22 @@ export function initDatabase(mediaDir: string) {
         "ALTER TABLE recording_overlay_metadata ADD COLUMN metadata_overridden INTEGER NOT NULL DEFAULT 0",
       );
     }
+    if (!overlayMetadataColumns.has("ocr_status")) {
+      db.exec(
+        "ALTER TABLE recording_overlay_metadata ADD COLUMN ocr_status TEXT",
+      );
+    }
+    db.exec(`
+      UPDATE recording_overlay_metadata
+      SET ocr_status = status
+      WHERE ocr_status IS NULL
+        AND (
+          metadata_overridden = 0
+          OR camera_type IS NOT NULL
+          OR license_plate IS NOT NULL
+          OR frame_time_sec IS NOT NULL
+        )
+    `);
 
     // Clean up expired tokens on startup
     cleanExpiredTokens();
@@ -412,6 +441,57 @@ export function getVideoPoiCounts(): Map<string, number> {
   return new Map(rows.map((row) => [row.videoId, row.count]));
 }
 
+export function getVideoPoiTypeCounts(videoId: string): VideoPoiTypeCounts {
+  const row = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM video_pois WHERE video_id = ?) as manual,
+         (SELECT COUNT(*) FROM recording_audio_events
+          WHERE video_id = ? AND event_type = 'camera-save') as cameraSave`,
+    )
+    .get(videoId, videoId) as Omit<VideoPoiTypeCounts, "total">;
+  return {
+    ...row,
+    total: row.manual + row.cameraSave,
+  };
+}
+
+export function getVideoPoiTypeCountsMap(): Map<string, VideoPoiTypeCounts> {
+  const rows = db
+    .prepare(
+      `SELECT
+         videoId,
+         SUM(manual) as manual,
+         SUM(cameraSave) as cameraSave
+       FROM (
+         SELECT video_id as videoId, COUNT(*) as manual, 0 as cameraSave
+         FROM video_pois
+         GROUP BY video_id
+         UNION ALL
+         SELECT video_id as videoId, 0 as manual, COUNT(*) as cameraSave
+         FROM recording_audio_events
+         WHERE event_type = 'camera-save'
+         GROUP BY video_id
+       )
+       GROUP BY videoId`,
+    )
+    .all() as Array<{
+    videoId: string;
+    manual: number;
+    cameraSave: number;
+  }>;
+  return new Map(
+    rows.map((row) => [
+      row.videoId,
+      {
+        manual: row.manual,
+        cameraSave: row.cameraSave,
+        total: row.manual + row.cameraSave,
+      },
+    ]),
+  );
+}
+
 export function getRecordingAudioScan(
   videoId: string,
 ): RecordingAudioScan | undefined {
@@ -427,6 +507,21 @@ export function getRecordingAudioScan(
        WHERE video_id = ?`,
     )
     .get(videoId) as RecordingAudioScan | undefined;
+}
+
+export function getRecordingAudioScans(): Map<string, RecordingAudioScan> {
+  const rows = db
+    .prepare(
+      `SELECT
+         video_id as videoId,
+         source_signature as sourceSignature,
+         detector_version as detectorVersion,
+         status,
+         scanned_at as scannedAt
+       FROM recording_audio_scans`,
+    )
+    .all() as RecordingAudioScan[];
+  return new Map(rows.map((row) => [row.videoId, row]));
 }
 
 export function replaceRecordingAudioEvents(
@@ -550,6 +645,7 @@ export function getRecordingOverlayMetadata(
          camera_type_override as cameraTypeOverride,
          license_plate_override as licensePlateOverride,
          metadata_overridden as metadataOverridden,
+         ocr_status as ocrStatus,
          source_path as sourcePath,
          source_mtime_ms as sourceMtimeMs,
          extractor_version as extractorVersion,
@@ -576,6 +672,7 @@ export function getRecordingOverlayMetadataMap(): Map<
          camera_type_override as cameraTypeOverride,
          license_plate_override as licensePlateOverride,
          metadata_overridden as metadataOverridden,
+         ocr_status as ocrStatus,
          source_path as sourcePath,
          source_mtime_ms as sourceMtimeMs,
          extractor_version as extractorVersion,
@@ -596,8 +693,8 @@ export function upsertRecordingOverlayMetadata(
   db.prepare(
     `INSERT INTO recording_overlay_metadata
        (video_id, camera_type, license_plate, source_path, source_mtime_ms,
-        extractor_version, status, scanned_at, frame_time_sec)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        extractor_version, status, ocr_status, scanned_at, frame_time_sec)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(video_id) DO UPDATE SET
        camera_type = excluded.camera_type,
        license_plate = excluded.license_plate,
@@ -605,6 +702,7 @@ export function upsertRecordingOverlayMetadata(
        source_mtime_ms = excluded.source_mtime_ms,
        extractor_version = excluded.extractor_version,
        status = excluded.status,
+       ocr_status = excluded.ocr_status,
        scanned_at = excluded.scanned_at,
        frame_time_sec = excluded.frame_time_sec`,
   ).run(
@@ -615,6 +713,7 @@ export function upsertRecordingOverlayMetadata(
     metadata.sourceMtimeMs,
     metadata.extractorVersion,
     metadata.status,
+    metadata.ocrStatus ?? metadata.status,
     metadata.scannedAt,
     metadata.frameTimeSec ?? null,
   );
@@ -637,9 +736,9 @@ export function setRecordingOverlayMetadataCorrection(input: {
   db.prepare(
     `INSERT INTO recording_overlay_metadata
        (video_id, camera_type, license_plate, source_path, source_mtime_ms,
-        extractor_version, status, scanned_at, frame_time_sec,
+        extractor_version, status, ocr_status, scanned_at, frame_time_sec,
         camera_type_override, license_plate_override, metadata_overridden)
-     VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+     VALUES (?, NULL, NULL, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, 1)
      ON CONFLICT(video_id) DO UPDATE SET
        camera_type_override = excluded.camera_type_override,
        license_plate_override = excluded.license_plate_override,

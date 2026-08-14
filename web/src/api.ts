@@ -61,6 +61,8 @@ export interface VideoPair {
   endState?: string;
   endCity?: string;
   poiCount?: number;
+  manualPoiCount?: number;
+  cameraSavePoiCount?: number;
   dashcamTimeZone?: string;
   gpsDisabled?: boolean;
   hasExternalGps?: boolean;
@@ -68,6 +70,11 @@ export interface VideoPair {
   cameraType?: string;
   licensePlate?: string;
   overlayMetadataStatus?: "pending" | "found" | "not-found" | "failed";
+  overlayMetadataOcrStatus?: "found" | "not-found" | "failed";
+  overlayMetadataOverridden?: boolean;
+  overlayMetadataScannedAt?: number;
+  overlayMetadataExtractorVersion?: number;
+  overlayMetadataFrameTimeSec?: number;
 }
 
 export interface GPSPoint {
@@ -280,6 +287,7 @@ export interface ClipJobStatus {
   progress: ClipGenerationProgress;
   result?: { filename: string; downloadUrl: string };
   error?: string;
+  updatedAt: string;
 }
 
 export function watchClipJob(
@@ -402,8 +410,93 @@ export async function downloadSharedClip(tokenId: string): Promise<{
 
 export interface GpsQueueStatus {
   limit: number;
-  processing: string[];
+  processing: Array<{ id: string; startedAt: number }>;
   queued: Array<{ id: string; queuedAt: number }>;
+}
+
+export interface BackgroundTasksStatus {
+  generatedAt: number;
+  overlayOcr: {
+    state: "checking" | "ready" | "disabled" | "unavailable";
+    message: string;
+    limit: number;
+    extractorVersion: number;
+    processing: Array<{ id: string; startedAt: number }>;
+    queued: Array<{ id: string; queuedAt: number }>;
+    summary: {
+      total: number;
+      notProcessed: number;
+      pending: number;
+      found: number;
+      notFound: number;
+      failed: number;
+    };
+  };
+  gpsExtraction: GpsQueueStatus;
+  audioEvents: {
+    enabled: boolean;
+    limit: number;
+    processing: Array<{ id: string; startedAt: number }>;
+    queued: Array<{ id: string; queuedAt: number }>;
+  };
+  clipJobs: ClipJobStatus[];
+  recordings: RecordingPostProcessJobs[];
+}
+
+export type PostProcessKind = "overlay-ocr" | "audio-events" | "gps-extraction";
+
+export type PostProcessJobState =
+  | "not-processed"
+  | "queued"
+  | "running"
+  | "completed"
+  | "no-data"
+  | "failed"
+  | "disabled"
+  | "unavailable";
+
+export interface PostProcessJobStatus {
+  state: PostProcessJobState;
+  message: string;
+  retryable: boolean;
+  updatedAt?: number;
+}
+
+export interface RecordingPostProcessJobs {
+  id: string;
+  startTime?: string;
+  jobs: Record<PostProcessKind, PostProcessJobStatus>;
+}
+
+export async function retryPostProcessJobs(
+  id: string,
+  job: PostProcessKind | "all",
+): Promise<{
+  accepted: boolean;
+  results: Record<PostProcessKind, { accepted: boolean; message: string }>;
+}> {
+  try {
+    const { data } = await api.post(`/videos/background-tasks/${id}/retry`, {
+      job,
+    });
+    return data;
+  } catch (error) {
+    if (
+      axios.isAxiosError(error) &&
+      error.response?.status === 409 &&
+      error.response.data?.results
+    ) {
+      return error.response.data;
+    }
+    throw error;
+  }
+}
+
+export async function getBackgroundTasksStatus(): Promise<BackgroundTasksStatus> {
+  const { data } = await api.get<BackgroundTasksStatus>(
+    "/videos/background-tasks",
+  );
+  return data;
 }
 
 export async function getGpsQueueStatus(): Promise<GpsQueueStatus> {

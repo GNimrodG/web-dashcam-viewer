@@ -46,10 +46,25 @@ export interface OverlayMetadataCandidate extends ExtractedOverlayMetadata {
   plateBounds?: { left: number; width: number; pageWidth: number };
 }
 
-const queue: VideoPair[] = [];
+interface OverlayQueueItem {
+  pair: VideoPair;
+  queuedAt: number;
+  force: boolean;
+}
+
+export type OverlayScannerState =
+  | "checking"
+  | "ready"
+  | "disabled"
+  | "unavailable";
+
+const queue: OverlayQueueItem[] = [];
 const queuedIds = new Set<string>();
-let active = 0;
+const activeScans = new Map<string, number>();
 let scannerTimer: NodeJS.Timeout | undefined;
+let scannerState: OverlayScannerState = "checking";
+let scannerMessage = "Checking OCR availability";
+let pairProvider: (() => VideoPair[]) | undefined;
 
 function applyStoredMetadata(
   pair: VideoPair,
@@ -59,6 +74,62 @@ function applyStoredMetadata(
   pair.cameraType = metadata.cameraType;
   pair.licensePlate = metadata.licensePlate;
   pair.overlayMetadataStatus = metadata.status;
+  pair.overlayMetadataOcrStatus = metadata.ocrStatus;
+  pair.overlayMetadataOverridden = metadata.overridden;
+  pair.overlayMetadataScannedAt = metadata.scannedAt;
+  pair.overlayMetadataExtractorVersion = metadata.extractorVersion;
+  pair.overlayMetadataFrameTimeSec = metadata.frameTimeSec;
+}
+
+export function summarizeOverlayMetadataStatuses(pairs: readonly VideoPair[]): {
+  total: number;
+  notProcessed: number;
+  pending: number;
+  found: number;
+  notFound: number;
+  failed: number;
+} {
+  const summary = {
+    total: pairs.length,
+    notProcessed: 0,
+    pending: 0,
+    found: 0,
+    notFound: 0,
+    failed: 0,
+  };
+  for (const pair of pairs) {
+    if (pair.overlayMetadataStatus === "pending") {
+      summary.pending++;
+      continue;
+    }
+    switch (pair.overlayMetadataOcrStatus) {
+      case "found":
+        summary.found++;
+        break;
+      case "not-found":
+        summary.notFound++;
+        break;
+      case "failed":
+        summary.failed++;
+        break;
+      default:
+        summary.notProcessed++;
+    }
+  }
+  return summary;
+}
+
+export function getOverlayMetadataScannerStatus() {
+  const pairs = pairProvider?.() ?? [];
+  return {
+    state: scannerState,
+    message: scannerMessage,
+    limit: OCR_CONCURRENCY,
+    extractorVersion: OVERLAY_METADATA_EXTRACTOR_VERSION,
+    processing: [...activeScans].map(([id, startedAt]) => ({ id, startedAt })),
+    queued: queue.map(({ pair, queuedAt }) => ({ id: pair.id, queuedAt })),
+    summary: summarizeOverlayMetadataStatuses(pairs),
+  };
 }
 
 function cleanOcrToken(value: string): string {
@@ -393,12 +464,13 @@ export async function extractOverlayMetadata(
   return selected;
 }
 
-async function scanPair(pair: VideoPair): Promise<void> {
+async function scanPair(pair: VideoPair, force = false): Promise<void> {
   const source = pair.channels.front || pair.channels.rear;
   if (!source) return;
   const sourceMtimeMs = source.mtimeMs ?? 0;
   const cached = getRecordingOverlayMetadata(pair.id);
   if (
+    !force &&
     cached?.extractorVersion === OVERLAY_METADATA_EXTRACTOR_VERSION &&
     canonicalMediaPath(cached.sourcePath) === canonicalMediaPath(source.path) &&
     Math.abs(cached.sourceMtimeMs - sourceMtimeMs) <= 1
@@ -462,15 +534,15 @@ async function scanPair(pair: VideoPair): Promise<void> {
 }
 
 function processQueue(): void {
-  while (active < OCR_CONCURRENCY && queue.length > 0) {
-    const pair = queue.shift()!;
-    active++;
-    scanPair(pair)
+  while (activeScans.size < OCR_CONCURRENCY && queue.length > 0) {
+    const { pair, force } = queue.shift()!;
+    activeScans.set(pair.id, Date.now());
+    scanPair(pair, force)
       .catch((error) =>
         logger.warn({ error, videoId: pair.id }, "Overlay scan failed"),
       )
       .finally(() => {
-        active--;
+        activeScans.delete(pair.id);
         queuedIds.delete(pair.id);
         processQueue();
       });
@@ -493,9 +565,34 @@ function enqueuePairs(pairs: VideoPair[]): void {
       continue;
     }
     pair.overlayMetadataStatus = "pending";
+    pair.overlayMetadataOcrStatus = undefined;
+    pair.overlayMetadataScannedAt = undefined;
+    pair.overlayMetadataExtractorVersion = undefined;
+    pair.overlayMetadataFrameTimeSec = undefined;
     queuedIds.add(pair.id);
-    queue.push(pair);
+    queue.push({ pair, queuedAt: Date.now(), force: false });
   }
+  processQueue();
+}
+
+export function retryOverlayMetadataScan(pair: VideoPair): void {
+  if (scannerState !== "ready") throw new Error(scannerMessage);
+  if (activeScans.has(pair.id)) return;
+
+  const existingIndex = queue.findIndex((item) => item.pair.id === pair.id);
+  if (existingIndex >= 0) {
+    const existing = queue.splice(existingIndex, 1)[0];
+    existing.force = true;
+    queue.unshift(existing);
+    processQueue();
+    return;
+  }
+
+  const source = pair.channels.front || pair.channels.rear;
+  if (!source) throw new Error("Recording has no video source");
+  pair.overlayMetadataStatus = "pending";
+  queuedIds.add(pair.id);
+  queue.unshift({ pair, queuedAt: Date.now(), force: true });
   processQueue();
 }
 
@@ -518,15 +615,20 @@ function hydratePairsFromCache(pairs: VideoPair[]): void {
 export async function startOverlayMetadataScanner(
   getPairs: () => VideoPair[],
 ): Promise<void> {
+  pairProvider = getPairs;
   const initialPairs = getPairs();
   hydratePairsFromCache(initialPairs);
   if (process.env.OVERLAY_OCR_ENABLED === "0") {
+    scannerState = "disabled";
+    scannerMessage = "Overlay OCR is disabled by configuration";
     logger.info("Recording overlay OCR is disabled");
     return;
   }
   try {
     await execa("tesseract", ["--version"]);
   } catch (error) {
+    scannerState = "unavailable";
+    scannerMessage = "Tesseract is unavailable";
     logger.warn(
       { error },
       "Tesseract is unavailable; recording camera and license plate OCR is disabled",
@@ -534,6 +636,8 @@ export async function startOverlayMetadataScanner(
     return;
   }
 
+  scannerState = "ready";
+  scannerMessage = "Overlay OCR is available";
   enqueuePairs(initialPairs);
   scannerTimer = setInterval(() => enqueuePairs(getPairs()), 30_000);
   scannerTimer.unref();
