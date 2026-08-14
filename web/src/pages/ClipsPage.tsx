@@ -361,6 +361,15 @@ export default function ClipsPage() {
                         {getResolutionBadge(clip.width, clip.height)!.label}
                       </Chip>
                     ))}
+                  {clip.hdr && (
+                    <Chip
+                      size="sm"
+                      variant="soft"
+                      color="primary"
+                      sx={{ fontSize: "0.625rem", minHeight: "18px", py: 0 }}>
+                      HDR
+                    </Chip>
+                  )}
                 </Box>
                 <Box sx={{ display: "flex", gap: 1, mt: 1, flexWrap: "wrap" }}>
                   <IconButton

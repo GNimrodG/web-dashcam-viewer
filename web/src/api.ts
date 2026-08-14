@@ -45,6 +45,7 @@ export interface ClipFile {
   clipChannels?: string;
   clipStartAt?: string | null;
   clipEndAt?: string | null;
+  hdr?: boolean;
 }
 
 export interface VideoPair {
@@ -69,6 +70,7 @@ export interface VideoPair {
   recordingStartTimeOverride?: string;
   cameraType?: string;
   licensePlate?: string;
+  hdr?: boolean;
   overlayMetadataStatus?: "pending" | "found" | "not-found" | "failed";
   overlayMetadataOcrStatus?: "found" | "not-found" | "failed";
   overlayMetadataOverridden?: boolean;
@@ -495,6 +497,15 @@ export async function retryPostProcessJobs(
 export async function getBackgroundTasksStatus(): Promise<BackgroundTasksStatus> {
   const { data } = await api.get<BackgroundTasksStatus>(
     "/videos/background-tasks",
+  );
+  return data;
+}
+
+export async function getRecordingPostProcessStatus(
+  id: string,
+): Promise<RecordingPostProcessJobs> {
+  const { data } = await api.get<RecordingPostProcessJobs>(
+    `/videos/background-tasks/${encodeURIComponent(id)}`,
   );
   return data;
 }

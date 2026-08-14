@@ -31,12 +31,16 @@ import {
   getBackgroundTasksStatus,
   retryPostProcessJobs,
   type BackgroundTasksStatus,
-  type PostProcessJobState,
   type PostProcessJobStatus,
   type PostProcessKind,
   type RecordingPostProcessJobs,
 } from "../api";
 import { formatRecordingTime, parsePairIdTime } from "../utils/recording-time";
+import {
+  getPostProcessStatePresentation,
+  POST_PROCESS_KINDS,
+  POST_PROCESS_LABELS,
+} from "../utils/post-process-jobs";
 
 interface BackgroundTasksModalProps {
   open: boolean;
@@ -48,40 +52,9 @@ type RecordingFilter = "all" | "active" | "attention";
 type Notice = { color: "success" | "warning"; message: string };
 
 const MAX_VISIBLE_RECORDINGS = 100;
-const PROCESS_LABELS: Record<PostProcessKind, string> = {
-  "overlay-ocr": "Camera overlay OCR",
-  "audio-events": "Saving beep detection",
-  "gps-extraction": "GPS extraction",
-};
-const PROCESS_KINDS = Object.keys(PROCESS_LABELS) as PostProcessKind[];
-
 function formatPairId(id: string): string {
   const timestamp = parsePairIdTime(id);
   return timestamp === null ? id : formatRecordingTime(timestamp);
-}
-
-function statePresentation(state: PostProcessJobState): {
-  label: string;
-  color: "success" | "neutral" | "warning" | "danger" | "primary";
-} {
-  switch (state) {
-    case "completed":
-      return { label: "Completed", color: "success" };
-    case "no-data":
-      return { label: "No data", color: "neutral" };
-    case "queued":
-      return { label: "Queued", color: "warning" };
-    case "running":
-      return { label: "Running", color: "primary" };
-    case "failed":
-      return { label: "Failed", color: "danger" };
-    case "disabled":
-      return { label: "Disabled", color: "neutral" };
-    case "unavailable":
-      return { label: "Unavailable", color: "danger" };
-    case "not-processed":
-      return { label: "Not processed", color: "warning" };
-  }
 }
 
 function JobCell({
@@ -97,8 +70,8 @@ function JobCell({
   retrying: boolean;
   onRetry: (id: string, kind: PostProcessKind) => void;
 }>) {
-  const presentation = statePresentation(job.state);
-  const label = PROCESS_LABELS[kind];
+  const presentation = getPostProcessStatePresentation(job.state);
+  const label = POST_PROCESS_LABELS[kind];
   return (
     <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.75 }}>
       <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -145,9 +118,8 @@ function JobSummary({
   detail: string;
 }>) {
   const jobs = recordings.map((recording) => recording.jobs[kind]);
-  const active = jobs.filter(
-    (job) => job.state === "queued" || job.state === "running",
-  ).length;
+  const running = jobs.filter((job) => job.state === "running").length;
+  const queued = jobs.filter((job) => job.state === "queued").length;
   const failed = jobs.filter((job) => job.state === "failed").length;
   const pending = jobs.filter((job) => job.state === "not-processed").length;
   const completed = jobs.filter(
@@ -169,8 +141,11 @@ function JobSummary({
           variant="soft">
           Done: {completed}
         </Chip>
-        <Chip size="sm" color={active ? "primary" : "neutral"} variant="soft">
-          Active: {active}
+        <Chip size="sm" color={running ? "primary" : "neutral"} variant="soft">
+          Running: {running}
+        </Chip>
+        <Chip size="sm" color={queued ? "warning" : "neutral"} variant="soft">
+          Queued: {queued}
         </Chip>
         <Chip size="sm" color={pending ? "warning" : "neutral"} variant="soft">
           Not processed: {pending}
@@ -260,7 +235,7 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
       const result = await retryPostProcessJobs(id, requested);
       const selected =
         requested === "all"
-          ? PROCESS_KINDS.map((kind) => result.results[kind])
+          ? POST_PROCESS_KINDS.map((kind) => result.results[kind])
           : [result.results[requested]];
       const rejected = selected.filter((item) => !item.accepted);
       setNotice({
@@ -302,7 +277,16 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
           overflow: "hidden",
         }}>
         <ModalClose />
-        <DialogTitle>Post-processing jobs</DialogTitle>
+        <DialogTitle
+          sx={{
+            position: "sticky",
+            top: 0,
+            zIndex: 2,
+            bgcolor: "background.surface",
+            pr: 4,
+          }}>
+          Post-processing jobs
+        </DialogTitle>
         <DialogContent sx={{ overflowX: "hidden" }}>
           <Stack spacing={2}>
             <Box
@@ -326,7 +310,7 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
                 onChange={(_, value) => value && setFilter(value)}
                 sx={{ minWidth: 170 }}>
                 <Option value="all">All recordings</Option>
-                <Option value="active">Active jobs</Option>
+                <Option value="active">Queued or running</Option>
                 <Option value="attention">Needs attention</Option>
               </Select>
               <Button
@@ -380,7 +364,11 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
 
                 <Sheet
                   variant="outlined"
-                  sx={{ borderRadius: "md", overflow: "auto" }}>
+                  sx={{
+                    borderRadius: "md",
+                    maxHeight: "min(60dvh, 720px)",
+                    overflow: "auto",
+                  }}>
                   <Table
                     size="sm"
                     stickyHeader
@@ -406,7 +394,7 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
                               {recording.id}
                             </Typography>
                           </td>
-                          {PROCESS_KINDS.map((kind) => (
+                          {POST_PROCESS_KINDS.map((kind) => (
                             <td key={kind}>
                               <JobCell
                                 recordingId={recording.id}
@@ -470,7 +458,7 @@ const BackgroundTasksModal: FunctionComponent<BackgroundTasksModalProps> = ({
                       mt: 1,
                     }}>
                     <Chip size="sm" variant="soft">
-                      Active:{" "}
+                      Running:{" "}
                       {
                         status.clipJobs.filter((job) => job.state === "running")
                           .length

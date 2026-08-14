@@ -4,6 +4,7 @@ import {
   getOverlaySampleTimes,
   summarizeOverlayMetadataStatuses,
   type OverlayMetadataCandidate,
+  parseOverlayOcrConcurrency,
   parseOverlayTsv,
   selectBestOverlayMetadata,
 } from "./overlay-metadata.js";
@@ -42,6 +43,15 @@ test("distinguishes recordings that were never processed from completed OCR resu
   );
 });
 
+test("caps overlay OCR concurrency to a safe worker count", () => {
+  assert.equal(parseOverlayOcrConcurrency(undefined), 1);
+  assert.equal(parseOverlayOcrConcurrency("2"), 2);
+  assert.equal(parseOverlayOcrConcurrency("2.9"), 2);
+  assert.equal(parseOverlayOcrConcurrency("0"), 1);
+  assert.equal(parseOverlayOcrConcurrency("not-a-number"), 1);
+  assert.equal(parseOverlayOcrConcurrency("180"), 4);
+});
+
 test("extracts camera type and plate from the spatial middle overlay block", () => {
   const header =
     "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext";
@@ -60,6 +70,7 @@ test("extracts camera type and plate from the spatial middle overlay block", () 
   const result = parseOverlayTsv([header, ...rows].join("\n"));
   assert.equal(result?.cameraType, "VIOFO A139 PRO");
   assert.equal(result?.licensePlate, "TEST123");
+  assert.equal(result?.hdr, true);
   assert.equal(result?.cameraConfidence, (88 + 90 + 90) / 3);
   assert.equal(result?.licensePlateConfidence, 48);
   assert.deepEqual(result?.plateBounds, {
@@ -92,6 +103,7 @@ test("prefers repeated OCR values over a single high-confidence result", () => {
     {
       cameraType: "SINGLE CAMERA",
       licensePlate: "SINGLE",
+      hdr: false,
       cameraConfidence: 99,
       licensePlateConfidence: 99,
       frameTimeSec: 0,
@@ -99,6 +111,7 @@ test("prefers repeated OCR values over a single high-confidence result", () => {
     {
       cameraType: "CONSENSUS CAMERA",
       licensePlate: "CONSENSUS",
+      hdr: true,
       cameraConfidence: 65,
       licensePlateConfidence: 60,
       frameTimeSec: 10,
@@ -106,6 +119,7 @@ test("prefers repeated OCR values over a single high-confidence result", () => {
     {
       cameraType: "CONSENSUS CAMERA",
       licensePlate: "CONSENSUS",
+      hdr: false,
       cameraConfidence: 55,
       licensePlateConfidence: 50,
       frameTimeSec: 20,
@@ -115,6 +129,7 @@ test("prefers repeated OCR values over a single high-confidence result", () => {
   assert.deepEqual(selectBestOverlayMetadata(candidates), {
     cameraType: "CONSENSUS CAMERA",
     licensePlate: "CONSENSUS",
+    hdr: true,
     frameTimeSec: 10,
   });
 });
@@ -124,6 +139,7 @@ test("selects camera and plate consensus independently", () => {
     {
       cameraType: "CAMERA A",
       licensePlate: "VALUE A",
+      hdr: false,
       cameraConfidence: 70,
       licensePlateConfidence: 70,
       frameTimeSec: 10,
@@ -131,6 +147,7 @@ test("selects camera and plate consensus independently", () => {
     {
       cameraType: "CAMERA A",
       licensePlate: "VALUE B",
+      hdr: false,
       cameraConfidence: 80,
       licensePlateConfidence: 80,
       frameTimeSec: 20,
@@ -138,6 +155,7 @@ test("selects camera and plate consensus independently", () => {
     {
       cameraType: "CAMERA B",
       licensePlate: "VALUE B",
+      hdr: false,
       cameraConfidence: 90,
       licensePlateConfidence: 90,
       frameTimeSec: 30,
@@ -147,6 +165,7 @@ test("selects camera and plate consensus independently", () => {
   assert.deepEqual(selectBestOverlayMetadata(candidates), {
     cameraType: "CAMERA A",
     licensePlate: "VALUE B",
+    hdr: false,
     frameTimeSec: 20,
   });
 });

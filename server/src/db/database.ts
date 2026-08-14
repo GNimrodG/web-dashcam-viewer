@@ -40,6 +40,7 @@ export interface RecordingOverlayMetadata {
   videoId: string;
   cameraType?: string;
   licensePlate?: string;
+  hdr?: boolean;
   sourcePath: string;
   sourceMtimeMs: number;
   extractorVersion: number;
@@ -52,10 +53,16 @@ export interface RecordingOverlayMetadata {
 
 type RecordingOverlayMetadataRow = Omit<
   RecordingOverlayMetadata,
-  "cameraType" | "licensePlate" | "frameTimeSec" | "ocrStatus" | "overridden"
+  | "cameraType"
+  | "licensePlate"
+  | "hdr"
+  | "frameTimeSec"
+  | "ocrStatus"
+  | "overridden"
 > & {
   cameraType: string | null;
   licensePlate: string | null;
+  hdr: number | null;
   cameraTypeOverride: string | null;
   licensePlateOverride: string | null;
   metadataOverridden: number;
@@ -69,6 +76,7 @@ function mapRecordingOverlayMetadataRow(
   const {
     cameraType,
     licensePlate,
+    hdr,
     cameraTypeOverride,
     licensePlateOverride,
     metadataOverridden,
@@ -87,6 +95,7 @@ function mapRecordingOverlayMetadataRow(
     ...metadata,
     cameraType: effectiveCameraType || undefined,
     licensePlate: effectiveLicensePlate || undefined,
+    hdr: hdr === null ? undefined : Boolean(hdr),
     status: metadataOverridden
       ? effectiveCameraType || effectiveLicensePlate
         ? "found"
@@ -188,6 +197,7 @@ export function initDatabase(mediaDir: string) {
       video_id TEXT PRIMARY KEY,
       camera_type TEXT,
       license_plate TEXT,
+      hdr INTEGER,
       source_path TEXT NOT NULL,
       source_mtime_ms REAL NOT NULL,
       extractor_version INTEGER NOT NULL,
@@ -227,6 +237,9 @@ export function initDatabase(mediaDir: string) {
       db.exec(
         "ALTER TABLE recording_overlay_metadata ADD COLUMN ocr_status TEXT",
       );
+    }
+    if (!overlayMetadataColumns.has("hdr")) {
+      db.exec("ALTER TABLE recording_overlay_metadata ADD COLUMN hdr INTEGER");
     }
     db.exec(`
       UPDATE recording_overlay_metadata
@@ -642,6 +655,7 @@ export function getRecordingOverlayMetadata(
          video_id as videoId,
          camera_type as cameraType,
          license_plate as licensePlate,
+         hdr,
          camera_type_override as cameraTypeOverride,
          license_plate_override as licensePlateOverride,
          metadata_overridden as metadataOverridden,
@@ -669,6 +683,7 @@ export function getRecordingOverlayMetadataMap(): Map<
          video_id as videoId,
          camera_type as cameraType,
          license_plate as licensePlate,
+         hdr,
          camera_type_override as cameraTypeOverride,
          license_plate_override as licensePlateOverride,
          metadata_overridden as metadataOverridden,
@@ -692,12 +707,13 @@ export function upsertRecordingOverlayMetadata(
 ): RecordingOverlayMetadata {
   db.prepare(
     `INSERT INTO recording_overlay_metadata
-       (video_id, camera_type, license_plate, source_path, source_mtime_ms,
-        extractor_version, status, ocr_status, scanned_at, frame_time_sec)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (video_id, camera_type, license_plate, hdr, source_path, source_mtime_ms,
+         extractor_version, status, ocr_status, scanned_at, frame_time_sec)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(video_id) DO UPDATE SET
        camera_type = excluded.camera_type,
        license_plate = excluded.license_plate,
+       hdr = excluded.hdr,
        source_path = excluded.source_path,
        source_mtime_ms = excluded.source_mtime_ms,
        extractor_version = excluded.extractor_version,
@@ -709,6 +725,7 @@ export function upsertRecordingOverlayMetadata(
     metadata.videoId,
     metadata.cameraType ?? null,
     metadata.licensePlate ?? null,
+    metadata.hdr === undefined ? null : Number(metadata.hdr),
     metadata.sourcePath,
     metadata.sourceMtimeMs,
     metadata.extractorVersion,

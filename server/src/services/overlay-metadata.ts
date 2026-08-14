@@ -8,15 +8,25 @@ import type { VideoPair } from "../types.js";
 import { canonicalMediaPath } from "../utils/media-path.js";
 import { processManager } from "../utils/process-manager.js";
 
-export const OVERLAY_METADATA_EXTRACTOR_VERSION = 2;
+export const OVERLAY_METADATA_EXTRACTOR_VERSION = 3;
 const SAMPLE_CHECKPOINT_FRACTIONS = Array.from(
   { length: 10 },
   (_, index) => index / 10,
 );
 const SAMPLE_OFFSETS = [0, 0.005, 0.01] as const;
-const OCR_CONCURRENCY = Math.max(
-  1,
-  Number(process.env.OVERLAY_OCR_CONCURRENCY) || 1,
+export const MAX_OVERLAY_OCR_CONCURRENCY = 4;
+
+export function parseOverlayOcrConcurrency(value: string | undefined): number {
+  const requested = Number(value);
+  if (!Number.isFinite(requested)) return 1;
+  return Math.min(
+    MAX_OVERLAY_OCR_CONCURRENCY,
+    Math.max(1, Math.floor(requested)),
+  );
+}
+
+const OCR_CONCURRENCY = parseOverlayOcrConcurrency(
+  process.env.OVERLAY_OCR_CONCURRENCY,
 );
 
 interface OcrWord {
@@ -29,6 +39,7 @@ interface OcrWord {
 interface ParsedOverlayMetadata {
   cameraType: string;
   licensePlate: string;
+  hdr: boolean;
   cameraConfidence: number;
   licensePlateConfidence: number;
   plateBounds: { left: number; width: number; pageWidth: number };
@@ -37,6 +48,7 @@ interface ParsedOverlayMetadata {
 export interface ExtractedOverlayMetadata {
   cameraType: string;
   licensePlate: string;
+  hdr: boolean;
   frameTimeSec: number;
 }
 
@@ -73,6 +85,7 @@ function applyStoredMetadata(
   if (!metadata) return;
   pair.cameraType = metadata.cameraType;
   pair.licensePlate = metadata.licensePlate;
+  pair.hdr = metadata.hdr;
   pair.overlayMetadataStatus = metadata.status;
   pair.overlayMetadataOcrStatus = metadata.ocrStatus;
   pair.overlayMetadataOverridden = metadata.overridden;
@@ -198,6 +211,7 @@ export function parseOverlayTsv(
   return {
     cameraType,
     licensePlate,
+    hdr: words.some((word) => word.text === "HDR"),
     cameraConfidence:
       cameraWords.reduce((total, word) => total + word.confidence, 0) /
       cameraWords.length,
@@ -291,6 +305,7 @@ export function selectBestOverlayMetadata(
   return {
     cameraType: camera.value,
     licensePlate: plate.value,
+    hdr: candidates.some((candidate) => candidate.hdr),
     frameTimeSec: representative.frameTimeSec,
   };
 }
@@ -377,6 +392,7 @@ export async function extractOverlayMetadata(
       candidates.push({
         cameraType: parsed.cameraType,
         licensePlate: parsed.licensePlate,
+        hdr: parsed.hdr,
         cameraConfidence: parsed.cameraConfidence,
         licensePlateConfidence: parsed.licensePlateConfidence,
         frameTimeSec,
@@ -490,6 +506,7 @@ async function scanPair(pair: VideoPair, force = false): Promise<void> {
         videoId: pair.id,
         cameraType: extracted.cameraType,
         licensePlate: extracted.licensePlate,
+        hdr: extracted.hdr,
         sourcePath: source.path,
         sourceMtimeMs,
         extractorVersion: OVERLAY_METADATA_EXTRACTOR_VERSION,
@@ -503,6 +520,7 @@ async function scanPair(pair: VideoPair, force = false): Promise<void> {
           videoId: pair.id,
           cameraType: extracted.cameraType,
           licensePlate: extracted.licensePlate,
+          hdr: extracted.hdr,
           frameTimeSec: extracted.frameTimeSec,
         },
         "Extracted recording overlay metadata",
@@ -616,6 +634,19 @@ export async function startOverlayMetadataScanner(
   getPairs: () => VideoPair[],
 ): Promise<void> {
   pairProvider = getPairs;
+  const requestedConcurrency = Number(process.env.OVERLAY_OCR_CONCURRENCY);
+  if (
+    Number.isFinite(requestedConcurrency) &&
+    requestedConcurrency > MAX_OVERLAY_OCR_CONCURRENCY
+  ) {
+    logger.warn(
+      {
+        requestedConcurrency,
+        concurrencyLimit: MAX_OVERLAY_OCR_CONCURRENCY,
+      },
+      "Overlay OCR concurrency was capped",
+    );
+  }
   const initialPairs = getPairs();
   hydratePairsFromCache(initialPairs);
   if (process.env.OVERLAY_OCR_ENABLED === "0") {

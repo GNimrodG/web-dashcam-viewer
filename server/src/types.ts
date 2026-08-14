@@ -40,6 +40,7 @@ export interface VideoPair {
   recordingStartTimeOverride?: string;
   cameraType?: string;
   licensePlate?: string;
+  hdr?: boolean;
   overlayMetadataStatus?: "pending" | "found" | "not-found" | "failed";
   overlayMetadataOcrStatus?: "found" | "not-found" | "failed";
   overlayMetadataOverridden?: boolean;

@@ -35,6 +35,13 @@ import { generateGPX } from "../services/gpx.js";
 import { saveRecordedGpxTrack } from "../services/gps.js";
 import { ensureThumbnail, getThumbnailPath } from "../services/thumbnail.js";
 import { ffprobe } from "../services/ffprobe.js";
+import {
+  buildClipMetadata,
+  getClipMetadataPath,
+  getGeneratedClipVideoId,
+  readClipMetadata,
+  writeClipMetadata,
+} from "../services/clip-metadata.js";
 import { loadConfig } from "../config.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -68,6 +75,7 @@ import {
 import { getOverlayMetadataScannerStatus } from "../services/overlay-metadata.js";
 import {
   getRecordingPostProcessJobs,
+  getRecordingPostProcessJobsById,
   retryRecordingPostProcesses,
   type PostProcessKind,
 } from "../services/post-process-jobs.js";
@@ -148,6 +156,14 @@ router.get("/background-tasks", (_req, res) => {
       gps: gpsExtraction,
     }),
   });
+});
+
+router.get("/background-tasks/:id", (req, res) => {
+  const recording = getRecordingPostProcessJobsById(req.params.id);
+  if (!recording) {
+    return res.status(404).json({ error: "Video pair not found" });
+  }
+  res.json(recording);
 });
 
 router.post("/background-tasks/:id/retry", (req, res) => {
@@ -366,6 +382,10 @@ router.get("/clips", async (_req, res) => {
         const filePath = path.join(clipsDir, filename);
         try {
           const stats = fs.statSync(filePath);
+          const clipMetadata = readClipMetadata(filePath);
+          const videoId =
+            clipMetadata?.videoId ?? getGeneratedClipVideoId(filename);
+          const sourcePair = videoId ? getVideoPairById(videoId) : undefined;
 
           // Get video metadata (duration and resolution)
           let duration: number | undefined;
@@ -405,6 +425,13 @@ router.get("/clips", async (_req, res) => {
             width,
             height,
             createdAt: stats.birthtime.toISOString(),
+            videoId,
+            clipStartTime: clipMetadata?.clipStartTime,
+            clipEndTime: clipMetadata?.clipEndTime,
+            clipChannels: clipMetadata?.clipChannels,
+            clipStartAt: clipMetadata?.clipStartAt,
+            clipEndAt: clipMetadata?.clipEndAt,
+            hdr: sourcePair?.hdr ?? clipMetadata?.hdr,
           };
         } catch (err) {
           // File might have been deleted or inaccessible, skip it
@@ -508,6 +535,10 @@ router.patch("/clips/:filename", (req, res) => {
         console.warn("Failed to rename thumbnail:", err);
       }
     }
+    const oldMetadataPath = getClipMetadataPath(oldPath);
+    if (fs.existsSync(oldMetadataPath)) {
+      fs.renameSync(oldMetadataPath, getClipMetadataPath(newPath));
+    }
 
     res.json({ success: true, message: "Clip renamed", newFilename });
   } catch (err: any) {
@@ -541,6 +572,8 @@ router.delete("/clips/:filename", (req, res) => {
         console.warn("Failed to delete thumbnail:", err);
       }
     }
+    const metadataPath = getClipMetadataPath(filePath);
+    if (fs.existsSync(metadataPath)) fs.unlinkSync(metadataPath);
 
     res.json({ success: true, message: "Clip deleted" });
   } catch (err: any) {
@@ -970,6 +1003,17 @@ router.post("/:id/clip", async (req, res) => {
           : {}),
         onProgress,
       });
+      writeClipMetadata(
+        outputPath,
+        buildClipMetadata({
+          videoId: pair.id,
+          clipStartTime: startTime,
+          clipEndTime: endTime,
+          clipChannels: channels,
+          sourceStartTime: pair.startTime,
+          hdr: pair.hdr,
+        }),
+      );
 
       return {
         filename: outputFilename,

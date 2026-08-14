@@ -8,6 +8,7 @@ export interface ClipMetadata {
   createdAt: number;
   clipStartAt: string | null;
   clipEndAt: string | null;
+  hdr?: boolean;
 }
 
 export function buildClipMetadata(options: {
@@ -17,6 +18,7 @@ export function buildClipMetadata(options: {
   clipChannels: string;
   createdAt?: number;
   sourceStartTime?: string;
+  hdr?: boolean;
 }): ClipMetadata {
   const startMs = options.sourceStartTime
     ? new Date(options.sourceStartTime).getTime()
@@ -35,7 +37,12 @@ export function buildClipMetadata(options: {
     clipEndAt: hasValidSourceStart
       ? new Date(startMs + options.clipEndTime * 1000).toISOString()
       : null,
+    hdr: options.hdr,
   };
+}
+
+export function getGeneratedClipVideoId(filename: string): string | undefined {
+  return /^clip_(\d{8}_\d{6})_/.exec(filename)?.[1];
 }
 
 export function getClipMetadataPath(outputPath: string): string {
@@ -71,6 +78,7 @@ export function readClipMetadata(outputPath: string): ClipMetadata | null {
       clipStartAt:
         typeof parsed.clipStartAt === "string" ? parsed.clipStartAt : null,
       clipEndAt: typeof parsed.clipEndAt === "string" ? parsed.clipEndAt : null,
+      hdr: typeof parsed.hdr === "boolean" ? parsed.hdr : undefined,
     };
   } catch {
     return null;

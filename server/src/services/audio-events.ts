@@ -186,8 +186,7 @@ export function isRecordingAudioScanCurrent(
   scan = getRecordingAudioScan(pair.id),
 ): scan is RecordingAudioScan {
   return Boolean(
-    scan &&
-      scan.detectorVersion === AUDIO_EVENT_DETECTOR_VERSION &&
+    scan?.detectorVersion === AUDIO_EVENT_DETECTOR_VERSION &&
       scan.sourceSignature === pairSourceSignature(pair),
   );
 }

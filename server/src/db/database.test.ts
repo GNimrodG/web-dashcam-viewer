@@ -160,6 +160,7 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       videoId: "recording-a",
       cameraType: "VIOFO A139 PRO",
       licensePlate: "TEST123",
+      hdr: true,
       sourcePath: "RO/recording-a.mp4",
       sourceMtimeMs: 1234,
       extractorVersion: 1,
@@ -171,6 +172,7 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       videoId: "recording-a",
       cameraType: "VIOFO A139 PRO",
       licensePlate: "TEST123",
+      hdr: true,
       sourcePath: "RO/recording-a.mp4",
       sourceMtimeMs: 1234,
       extractorVersion: 1,
@@ -194,6 +196,7 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       videoId: "recording-a",
       cameraType: "Different OCR camera",
       licensePlate: "OCRVALUE",
+      hdr: false,
       sourcePath: "RO/recording-a.mp4",
       sourceMtimeMs: 2345,
       extractorVersion: 2,
@@ -205,6 +208,7 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       videoId: "recording-a",
       cameraType: "Corrected camera",
       licensePlate: "MANUAL",
+      hdr: false,
       sourcePath: "RO/recording-a.mp4",
       sourceMtimeMs: 2345,
       extractorVersion: 2,
@@ -253,6 +257,7 @@ test("persists, orders, and deletes video POIs within their recording", () => {
       getRecordingOverlayMetadata("recording-a")?.licensePlate,
       "MANUAL",
     );
+    assert.equal(getRecordingOverlayMetadata("recording-a")?.hdr, false);
   } finally {
     closeDatabase();
     rmSync(mediaDir, { recursive: true, force: true });
@@ -291,6 +296,7 @@ test("migrates existing overlay metadata before saving corrections", () => {
       getRecordingOverlayMetadata("recording-a")?.ocrStatus,
       "found",
     );
+    assert.equal(getRecordingOverlayMetadata("recording-a")?.hdr, undefined);
     setRecordingOverlayMetadataCorrection({
       videoId: "recording-a",
       cameraType: "Corrected camera",

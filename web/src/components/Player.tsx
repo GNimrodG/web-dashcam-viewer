@@ -58,6 +58,7 @@ import {
   KEYBOARD_SEEK_SECONDS,
 } from "../utils/playback-seek";
 import EditRecordingMetadataModal from "./EditRecordingMetadataModal";
+import RecordingPostProcessMenu from "./RecordingPostProcessMenu";
 import {
   calculateClipPreviewLayout,
   DEFAULT_PIP_CORNER,
@@ -913,6 +914,8 @@ export function Player({
               onClick={handleOpenPoiDialog}>
               <AddLocationAltIcon />
             </IconButton>
+
+            <RecordingPostProcessMenu recordingId={pair.id} />
 
             {/* Create Clip Button */}
             <IconButton

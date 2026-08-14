@@ -1,5 +1,7 @@
 import {
+  getRecordingAudioScan,
   getRecordingAudioScans,
+  getVideoPoiTypeCounts,
   getVideoPoiTypeCountsMap,
   type RecordingAudioScan,
 } from "../db/database.js";
@@ -299,6 +301,45 @@ export function getRecordingPostProcessJobs(
       },
     }))
     .sort((left, right) => right.id.localeCompare(left.id));
+}
+
+export function getRecordingPostProcessJobsById(
+  id: string,
+  scanners: ScannerSnapshots = {
+    overlay: getOverlayMetadataScannerStatus(),
+    audio: getAudioEventScannerStatus(),
+    gps: getGpsExtractionQueueStatus(),
+  },
+): RecordingPostProcessJobs | undefined {
+  const pair = getVideoPairById(id);
+  if (!pair) return undefined;
+
+  const poiCounts = getVideoPoiTypeCounts(id);
+  return {
+    id: pair.id,
+    startTime: pair.startTime,
+    jobs: {
+      "overlay-ocr": overlayJobStatus(
+        pair,
+        scanners.overlay,
+        createRuntimeLookup(
+          scanners.overlay.processing,
+          scanners.overlay.queued,
+        ),
+      ),
+      "audio-events": audioJobStatus(
+        pair,
+        scanners.audio,
+        createRuntimeLookup(scanners.audio.processing, scanners.audio.queued),
+        getRecordingAudioScan(id),
+        poiCounts.cameraSave,
+      ),
+      "gps-extraction": gpsJobStatus(
+        pair,
+        createRuntimeLookup(scanners.gps.processing, scanners.gps.queued),
+      ),
+    },
+  };
 }
 
 export function retryRecordingPostProcesses(

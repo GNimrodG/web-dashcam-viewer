@@ -12,6 +12,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - **HTTP range streaming** for efficient video delivery
 - **Cross-platform path handling** (Windows/Linux compatible)
 - **Camera and license plate OCR** from the recording's on-video overlay
+- **HDR detection** from the camera overlay with an HDR badge on generated clips
 - **Per-recording OCR status** that distinguishes pending, completed, no-match, failed, and never-processed recordings
 - **Automatic recording-save detection** from the camera's audio beep pattern
 
@@ -169,7 +170,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 
 - `INDEX_CONCURRENCY` - Parallel indexing operations (default: `2`)
 - `GPS_CONCURRENT_LIMIT` - Parallel GPS extractions (default: `5`)
-- `OVERLAY_OCR_CONCURRENCY` - Parallel camera/plate OCR scans (default: `1`)
+- `OVERLAY_OCR_CONCURRENCY` - Parallel camera/plate OCR scans (default: `1`, maximum: `4`)
 - `OVERLAY_OCR_ENABLED` - Set to `0` to disable camera/plate OCR (default: enabled)
 - `AUDIO_EVENT_CONCURRENCY` - Parallel background camera-save beep scans (default: `1`)
 - `AUDIO_EVENT_DETECTION_ENABLED` - Set to `0` to disable automatic camera-save beep detection (default: enabled)
@@ -188,6 +189,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `POST /api/videos/gps/gpx/bulk` - Apply one GPX file to every overlapping recording
 - `GET /api/videos/gps-queue-status` - Real-time GPS queue status (SSE)
 - `GET /api/videos/background-tasks` - Current OCR, GPS, audio detection, and clip-generation task status
+- `GET /api/videos/background-tasks/:id` - Post-processing status for one recording
 - `POST /api/videos/background-tasks/:id/retry` - Re-run one or all post-processors for a recording
 - `GET /api/videos/locations` - Get unique cities/countries for autocomplete
 - `GET /api/videos/clips` - List generated clips
