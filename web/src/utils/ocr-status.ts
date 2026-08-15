@@ -21,6 +21,16 @@ export function getOcrStatusInfo(pair: VideoPair): OcrStatusInfo {
 
   switch (pair.overlayMetadataOcrStatus) {
     case "found":
+      if (pair.overlayMetadataOverridden) {
+        return {
+          label: "OCR processed · manually overridden",
+          description:
+            "OCR completed and found camera overlay metadata, but the values were manually overridden.",
+          color: "neutral",
+          processed: true,
+        };
+      }
+
       return {
         label: "OCR processed",
         description: "OCR completed and found camera overlay metadata.",

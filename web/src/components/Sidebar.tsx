@@ -1135,7 +1135,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                             .join(", ")}
                                           )
                                         </Typography>
-                                        {(p.cameraType || p.licensePlate) && (
+                                        {p.cameraType || p.licensePlate ? (
                                           <Typography
                                             level="body-xs"
                                             color="neutral"
@@ -1150,8 +1150,9 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                               .filter(Boolean)
                                               .join(" · ")}
                                           </Typography>
+                                        ) : (
+                                          <PairOcrStatus pair={p} />
                                         )}
-                                        <PairOcrStatus pair={p} />
                                         <PairLocation pair={p} />
                                       </ListItemContent>
                                     </ListItemButton>

@@ -218,6 +218,8 @@ export default function VideoGpxUploader({
               minWidth: 0,
               overflowX: "hidden",
               overflowY: "auto",
+              height: "100%",
+              py: 1,
             }}>
             <Typography level="body-sm" sx={{ mb: 2 }}>
               Use the dashcam time zone to derive the start from the filename,

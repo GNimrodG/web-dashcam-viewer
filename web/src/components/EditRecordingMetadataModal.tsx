@@ -73,7 +73,13 @@ export default function EditRecordingMetadataModal({
 
   return (
     <Modal open={open} onClose={saving ? undefined : onClose}>
-      <ModalDialog sx={{ width: "min(480px, calc(100vw - 32px))" }}>
+      <ModalDialog
+        sx={{ width: "min(480px, calc(100vw - 32px))" }}
+        component="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          handleSave();
+        }}>
         <DialogTitle>Edit recording details</DialogTitle>
         <DialogContent>
           These values replace the OCR result and remain in use if the recording
@@ -85,7 +91,7 @@ export default function EditRecordingMetadataModal({
             <Input
               autoFocus
               value={cameraType}
-              placeholder="VIOFO A139 PRO"
+              placeholder={pair.cameraType || "VIOFO A139 PRO"}
               slotProps={{ input: { maxLength: 100 } }}
               onChange={(event) => setCameraType(event.target.value)}
             />
@@ -94,6 +100,7 @@ export default function EditRecordingMetadataModal({
             <FormLabel>Vehicle license plate</FormLabel>
             <Input
               value={licensePlate}
+              placeholder={pair.licensePlate || "ABC123"}
               slotProps={{ input: { maxLength: 40 } }}
               onChange={(event) => setLicensePlate(event.target.value)}
             />
@@ -115,7 +122,7 @@ export default function EditRecordingMetadataModal({
             onClick={onClose}>
             Cancel
           </Button>
-          <Button loading={saving} onClick={() => void handleSave()}>
+          <Button loading={saving} type="submit">
             Save corrections
           </Button>
         </DialogActions>
