@@ -98,6 +98,36 @@ test("reports live OCR progress for a running job", () => {
   assert.deepEqual(status.progress, progress);
 });
 
+test("reports unreadable recordings as unavailable for OCR", () => {
+  const status = overlayJobStatus(
+    pair(),
+    {
+      state: "ready",
+      message: "available",
+      limit: 1,
+      extractorVersion: 3,
+      processing: [],
+      queued: [],
+      summary: {
+        total: 1,
+        notProcessed: 1,
+        pending: 0,
+        found: 0,
+        notFound: 0,
+        failed: 0,
+      },
+    },
+    emptyRuntime,
+  );
+
+  assert.deepEqual(status, {
+    state: "unavailable",
+    message:
+      "Recording duration is unavailable; the video may be incomplete or unreadable",
+    retryable: false,
+  });
+});
+
 test("reports disabled beep detection when no current scan exists", () => {
   const status = audioJobStatus(
     pair(),

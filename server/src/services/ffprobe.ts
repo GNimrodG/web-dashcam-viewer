@@ -6,6 +6,28 @@ export interface FFProbeResult {
   format: any;
 }
 
+function positiveNumber(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+export function getUsableVideoDuration(
+  metadata: FFProbeResult,
+): number | undefined {
+  const videoStreams = metadata.streams.filter(
+    (stream) => stream?.codec_type === "video",
+  );
+  if (!videoStreams.length) return undefined;
+
+  const formatDuration = positiveNumber(metadata.format?.duration);
+  if (formatDuration !== undefined) return formatDuration;
+
+  const streamDurations = videoStreams
+    .map((stream) => positiveNumber(stream?.duration))
+    .filter((duration): duration is number => duration !== undefined);
+  return streamDurations.length ? Math.max(...streamDurations) : undefined;
+}
+
 export async function ffprobe(filePath: string): Promise<FFProbeResult> {
   const proc = execa("ffprobe", [
     "-v",

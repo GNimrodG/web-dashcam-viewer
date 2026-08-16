@@ -20,8 +20,19 @@ export function parseOverlayOcrConcurrency(value: string | undefined): number {
   return Math.max(1, Math.floor(requested));
 }
 
+export function parseOverlayOcrProcessTimeout(
+  value: string | undefined,
+): number {
+  const requested = Number(value);
+  if (!Number.isFinite(requested) || requested <= 0) return 30_000;
+  return Math.floor(requested);
+}
+
 const OCR_CONCURRENCY = parseOverlayOcrConcurrency(
   process.env.OVERLAY_OCR_CONCURRENCY,
+);
+const OCR_PROCESS_TIMEOUT_MS = parseOverlayOcrProcessTimeout(
+  process.env.OVERLAY_OCR_PROCESS_TIMEOUT_MS,
 );
 
 interface OcrWord {
@@ -84,6 +95,49 @@ let scannerTimer: NodeJS.Timeout | undefined;
 let scannerState: OverlayScannerState = "checking";
 let scannerMessage = "Checking OCR availability";
 let pairProvider: (() => VideoPair[]) | undefined;
+
+function getOverlaySource(pair: VideoPair) {
+  return [pair.channels.front, pair.channels.rear].find(
+    (source) =>
+      source?.durationSec !== undefined &&
+      Number.isFinite(source.durationSec) &&
+      source.durationSec > 0,
+  );
+}
+
+export function getOverlayMetadataScanIssue(
+  pair: VideoPair,
+): string | undefined {
+  if (!pair.channels.front && !pair.channels.rear) {
+    return "Recording has no video source";
+  }
+  if (!getOverlaySource(pair)) {
+    return "Recording duration is unavailable; the video may be incomplete or unreadable";
+  }
+  return undefined;
+}
+
+export function formatOverlayOcrError(error: unknown): string {
+  if (error && typeof error === "object") {
+    const processError = error as {
+      stderr?: unknown;
+      shortMessage?: unknown;
+      message?: unknown;
+    };
+    if (typeof processError.stderr === "string" && processError.stderr.trim()) {
+      return processError.stderr.trim();
+    }
+    if (processError.stderr instanceof Uint8Array) {
+      const stderr = Buffer.from(processError.stderr).toString("utf8").trim();
+      if (stderr) return stderr;
+    }
+    if (typeof processError.shortMessage === "string") {
+      return processError.shortMessage;
+    }
+    if (typeof processError.message === "string") return processError.message;
+  }
+  return String(error);
+}
 
 function applyStoredMetadata(
   pair: VideoPair,
@@ -357,7 +411,11 @@ async function extractBottomFrame(
       "png",
       "pipe:1",
     ],
-    { encoding: "buffer", maxBuffer: 20 * 1024 * 1024 },
+    {
+      encoding: "buffer",
+      maxBuffer: 20 * 1024 * 1024,
+      timeout: OCR_PROCESS_TIMEOUT_MS,
+    },
   );
   processManager.register(proc);
   return (await proc).stdout;
@@ -378,6 +436,7 @@ async function runTesseract(
     input: image,
     encoding: "utf8",
     maxBuffer: 5 * 1024 * 1024,
+    timeout: OCR_PROCESS_TIMEOUT_MS,
   });
   processManager.register(proc);
   return (await proc).stdout;
@@ -521,8 +580,10 @@ export async function extractOverlayMetadata(
 }
 
 async function scanPair(pair: VideoPair, force = false): Promise<void> {
-  const source = pair.channels.front || pair.channels.rear;
-  if (!source) return;
+  const issue = getOverlayMetadataScanIssue(pair);
+  if (issue) throw new Error(issue);
+  const source = getOverlaySource(pair)!;
+  const durationSec = source.durationSec!;
   const sourceMtimeMs = source.mtimeMs ?? 0;
   const cached = getRecordingOverlayMetadata(pair.id);
   if (
@@ -541,14 +602,14 @@ async function scanPair(pair: VideoPair, force = false): Promise<void> {
     {
       videoId: pair.id,
       filePath: source.path,
-      durationSec: pair.durationSec ?? 0,
+      durationSec,
     },
     "Starting recording overlay OCR",
   );
   try {
     const extracted = await extractOverlayMetadata(
       source.path,
-      pair.durationSec ?? 0,
+      durationSec,
       (progress) => {
         const activeScan = activeScans.get(pair.id);
         if (activeScan) activeScan.progress = progress;
@@ -606,6 +667,7 @@ async function scanPair(pair: VideoPair, force = false): Promise<void> {
     applyStoredMetadata(pair, stored);
     logger.info({ videoId: pair.id }, "No recording overlay metadata found");
   } catch (error) {
+    const reason = formatOverlayOcrError(error);
     const stored = upsertRecordingOverlayMetadata({
       videoId: pair.id,
       sourcePath: source.path,
@@ -615,7 +677,21 @@ async function scanPair(pair: VideoPair, force = false): Promise<void> {
       scannedAt: Date.now(),
     });
     applyStoredMetadata(pair, stored);
-    logger.warn({ error, videoId: pair.id }, "Recording overlay OCR failed");
+    logger.warn(
+      { videoId: pair.id, filePath: source.path, reason },
+      "Recording overlay OCR failed",
+    );
+  }
+}
+
+export async function runOverlayQueueTask(
+  task: () => Promise<void>,
+  release: () => void,
+): Promise<void> {
+  try {
+    await task();
+  } finally {
+    release();
   }
 }
 
@@ -623,23 +699,27 @@ function processQueue(): void {
   while (activeScans.size < OCR_CONCURRENCY && queue.length > 0) {
     const { pair, force } = queue.shift()!;
     activeScans.set(pair.id, { startedAt: Date.now() });
-    scanPair(pair, force)
-      .catch((error) =>
-        logger.warn({ error, videoId: pair.id }, "Overlay scan failed"),
-      )
-      .finally(() => {
+    void runOverlayQueueTask(
+      () => scanPair(pair, force),
+      () => {
         activeScans.delete(pair.id);
         queuedIds.delete(pair.id);
-        processQueue();
-      });
+        queueMicrotask(processQueue);
+      },
+    ).catch((error) =>
+      logger.warn(
+        { reason: formatOverlayOcrError(error), videoId: pair.id },
+        "Overlay scan failed",
+      ),
+    );
   }
 }
 
 function enqueuePairs(pairs: VideoPair[]): void {
   for (const pair of pairs) {
     if (queuedIds.has(pair.id)) continue;
-    const source = pair.channels.front || pair.channels.rear;
-    if (!source) continue;
+    if (getOverlayMetadataScanIssue(pair)) continue;
+    const source = getOverlaySource(pair)!;
     const cached = getRecordingOverlayMetadata(pair.id);
     const cacheCurrent =
       cached?.extractorVersion === OVERLAY_METADATA_EXTRACTOR_VERSION &&
@@ -665,6 +745,9 @@ export function retryOverlayMetadataScan(pair: VideoPair): void {
   if (scannerState !== "ready") throw new Error(scannerMessage);
   if (activeScans.has(pair.id)) return;
 
+  const issue = getOverlayMetadataScanIssue(pair);
+  if (issue) throw new Error(issue);
+
   const existingIndex = queue.findIndex((item) => item.pair.id === pair.id);
   if (existingIndex >= 0) {
     const existing = queue.splice(existingIndex, 1)[0];
@@ -674,8 +757,6 @@ export function retryOverlayMetadataScan(pair: VideoPair): void {
     return;
   }
 
-  const source = pair.channels.front || pair.channels.rear;
-  if (!source) throw new Error("Recording has no video source");
   pair.overlayMetadataStatus = "pending";
   queuedIds.add(pair.id);
   queue.unshift({ pair, queuedAt: Date.now(), force: true });

@@ -172,6 +172,7 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - `GPS_CONCURRENT_LIMIT` - Parallel GPS extractions (default: `5`)
 - `OVERLAY_OCR_CONCURRENCY` - Parallel camera/plate OCR scans (default: `1`)
 - `OVERLAY_OCR_ENABLED` - Set to `0` to disable camera/plate OCR (default: enabled)
+- `OVERLAY_OCR_PROCESS_TIMEOUT_MS` - Maximum runtime for each FFmpeg or Tesseract OCR subprocess (default: `30000`)
 - `AUDIO_EVENT_CONCURRENCY` - Parallel background camera-save beep scans (default: `1`)
 - `AUDIO_EVENT_DETECTION_ENABLED` - Set to `0` to disable automatic camera-save beep detection (default: enabled)
 

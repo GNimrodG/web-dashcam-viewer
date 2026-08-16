@@ -3,7 +3,12 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import fssync from "node:fs";
 import chokidar from "chokidar";
-import { ffprobe, FFProbeResult, parseISO6709 } from "./ffprobe.js";
+import {
+  ffprobe,
+  FFProbeResult,
+  getUsableVideoDuration,
+  parseISO6709,
+} from "./ffprobe.js";
 import {
   GPS_EXTRACTION_VERSION,
   deleteRecordedGpxTrack,
@@ -202,6 +207,8 @@ export async function buildIndex(mediaDir: string) {
             vf.createdAt ||
             st.birthtime.toISOString();
           if (
+            !vf.durationSec ||
+            !Number.isFinite(vf.durationSec) ||
             vf.size !== st.size ||
             (vf.mtimeMs && Math.abs(vf.mtimeMs - st.mtimeMs) > 1)
           ) {
@@ -419,10 +426,19 @@ async function upsertFile(filePath: string) {
 
     const existing = findVideoFile(filePath);
     let meta: FFProbeResult | null = null;
-    if (existing && existing.mtimeMs === st.mtimeMs && existing.durationSec) {
+    let probedDuration: number | undefined;
+    if (existing?.mtimeMs === st.mtimeMs && existing.durationSec) {
       // Assume unchanged; skip probing
     } else {
       meta = await safeProbe(filePath);
+      probedDuration = meta ? getUsableVideoDuration(meta) : undefined;
+      if (!probedDuration) {
+        logger.warn(
+          { filePath, size: st.size },
+          "Skipping incomplete or unreadable video file",
+        );
+        return;
+      }
     }
 
     const vf: VideoFile = {
@@ -437,8 +453,7 @@ async function upsertFile(filePath: string) {
         meta?.format?.tags?.["com.apple.quicktime.creationdate"] ||
         existing?.createdAt ||
         st.birthtime.toISOString(),
-      durationSec:
-        existing?.durationSec || tryParseNumber(meta?.format?.duration),
+      durationSec: probedDuration ?? existing?.durationSec,
       location: existing?.location ?? parseLocation(meta),
       important: existing?.important ?? isRoMediaPath(filePath),
     };

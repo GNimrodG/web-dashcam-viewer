@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  formatOverlayOcrError,
+  getOverlayMetadataScanIssue,
   getOverlaySampleTimes,
   summarizeOverlayMetadataStatuses,
   type OverlayMetadataCandidate,
   parseOverlayOcrConcurrency,
+  parseOverlayOcrProcessTimeout,
   parseOverlayTsv,
+  runOverlayQueueTask,
   selectBestOverlayMetadata,
 } from "./overlay-metadata.js";
 import type { VideoPair } from "../types.js";
@@ -52,6 +56,28 @@ test("parses overlay OCR concurrency without an upper limit", () => {
   assert.equal(parseOverlayOcrConcurrency("180"), 180);
 });
 
+test("uses a bounded subprocess timeout for OCR tools", () => {
+  assert.equal(parseOverlayOcrProcessTimeout(undefined), 30_000);
+  assert.equal(parseOverlayOcrProcessTimeout("0"), 30_000);
+  assert.equal(parseOverlayOcrProcessTimeout("45000"), 45_000);
+});
+
+test("releases OCR queue capacity after a failed task", async () => {
+  let released = false;
+  await assert.rejects(
+    runOverlayQueueTask(
+      async () => {
+        throw new Error("invalid video");
+      },
+      () => {
+        released = true;
+      },
+    ),
+    /invalid video/,
+  );
+  assert.equal(released, true);
+});
+
 test("extracts camera type and plate from the spatial middle overlay block", () => {
   const header =
     "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext";
@@ -96,6 +122,45 @@ test("samples three frames near every ten-percent checkpoint", () => {
   assert.deepEqual(times.slice(0, 6), [0, 0.5, 1, 10, 10.5, 11]);
   assert.deepEqual(times.slice(-3), [90, 90.5, 91]);
   assert.deepEqual(getOverlaySampleTimes(0), [0]);
+});
+
+test("does not queue overlay OCR for unreadable video sources", () => {
+  assert.equal(
+    getOverlayMetadataScanIssue({
+      id: "unreadable",
+      channels: {
+        front: {
+          path: "broken.mp4",
+          filename: "broken.mp4",
+          size: 100,
+        },
+      },
+    }),
+    "Recording duration is unavailable; the video may be incomplete or unreadable",
+  );
+  assert.equal(
+    getOverlayMetadataScanIssue({
+      id: "readable",
+      channels: {
+        front: {
+          path: "video.mp4",
+          filename: "video.mp4",
+          size: 100,
+          durationSec: 60,
+        },
+      },
+    }),
+    undefined,
+  );
+});
+
+test("formats buffered ffmpeg errors as readable text", () => {
+  assert.equal(
+    formatOverlayOcrError({
+      stderr: Buffer.from("moov atom not found\nInvalid data found"),
+    }),
+    "moov atom not found\nInvalid data found",
+  );
 });
 
 test("prefers repeated OCR values over a single high-confidence result", () => {
