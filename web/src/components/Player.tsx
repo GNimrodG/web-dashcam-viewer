@@ -780,9 +780,37 @@ export function Player({
       const automatic = poi.kind === "camera-save";
       const poiIndicator = (
         <Box
-          component="span"
+          component="button"
+          type="button"
+          aria-label={`Seek to ${poi.label} at ${formatTime(poi.timeSec)}`}
           title={`${poi.label} at ${formatTime(poi.timeSec)}`}
-          sx={{ color: automatic ? "#dc2626" : "#f97316" }}>
+          onKeyDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onTouchStart={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            seekTo(poi.timeSec);
+          }}
+          sx={{
+            appearance: "none",
+            position: "absolute",
+            top: "calc(100% + 5px)",
+            left: "50%",
+            transform: "translateX(-50%)",
+            border: 0,
+            p: 0,
+            bgcolor: "transparent",
+            color: automatic ? "#dc2626" : "#f97316",
+            font: "inherit",
+            lineHeight: 1,
+            cursor: "pointer",
+            "&:focus-visible": {
+              outline: "2px solid",
+              outlineColor: "primary.500",
+              outlineOffset: 2,
+              borderRadius: "50%",
+            },
+          }}>
           ◆
         </Box>
       );
@@ -791,13 +819,29 @@ export function Player({
       );
       if (existingMark) {
         existingMark.label = (
-          <Stack direction="row" spacing={0.5} alignItems="center">
+          <Box
+            component="span"
+            sx={{ position: "relative", display: "inline-block" }}>
             <span>{existingMark.label}</span>
             {poiIndicator}
-          </Stack>
+          </Box>
         );
       } else {
-        timelineMarks.push({ value: poi.timeSec, label: poiIndicator });
+        timelineMarks.push({
+          value: poi.timeSec,
+          label: (
+            <Box
+              component="span"
+              sx={{
+                position: "relative",
+                display: "inline-block",
+                width: 0,
+                height: "1.3125rem",
+              }}>
+              {poiIndicator}
+            </Box>
+          ),
+        });
       }
     }
     return timelineMarks.sort((a, b) => a.value - b.value);
@@ -845,7 +889,12 @@ export function Player({
               rearRef.current.currentTime = newValue as number;
           }}
           marks={marks}
-          sx={{ mb: 2, marginInline: 3, width: "auto" }}
+          slotProps={{ markLabel: { "aria-hidden": false } }}
+          sx={{
+            mb: pois.length > 0 ? 4 : 2,
+            marginInline: 3,
+            width: "auto",
+          }}
         />
 
         <Stack direction="row" spacing={1} alignItems="center">
