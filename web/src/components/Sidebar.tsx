@@ -1077,8 +1077,18 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                               }
                                               aria-label={`${p.manualPoiCount} manually marked point${p.manualPoiCount === 1 ? "" : "s"} of interest`}
                                               title={`${p.manualPoiCount} manually marked point${p.manualPoiCount === 1 ? "" : "s"} of interest`}
-                                              sx={{ minHeight: 20 }}>
-                                              {p.manualPoiCount}
+                                              sx={{
+                                                minHeight: 20,
+                                                ...(p.manualPoiCount === 1 && {
+                                                  gap: 0,
+                                                  "& .MuiChip-startDecorator": {
+                                                    "--Icon-margin": "0",
+                                                  },
+                                                }),
+                                              }}>
+                                              {p.manualPoiCount > 1
+                                                ? p.manualPoiCount
+                                                : null}
                                             </Chip>
                                           )}
                                           {!!p.cameraSavePoiCount && (
@@ -1093,8 +1103,19 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
                                               }
                                               aria-label={`${p.cameraSavePoiCount} detected camera saving beep event${p.cameraSavePoiCount === 1 ? "" : "s"}`}
                                               title={`${p.cameraSavePoiCount} detected camera saving beep event${p.cameraSavePoiCount === 1 ? "" : "s"}`}
-                                              sx={{ minHeight: 20 }}>
-                                              {p.cameraSavePoiCount}
+                                              sx={{
+                                                minHeight: 20,
+                                                ...(p.cameraSavePoiCount ===
+                                                  1 && {
+                                                  gap: 0,
+                                                  "& .MuiChip-startDecorator": {
+                                                    "--Icon-margin": "0",
+                                                  },
+                                                }),
+                                              }}>
+                                              {p.cameraSavePoiCount > 1
+                                                ? p.cameraSavePoiCount
+                                                : null}
                                             </Chip>
                                           )}
                                           {(!p.channels.front ||
