@@ -69,7 +69,7 @@ export function buildPictureInPictureFilter(options: {
     ? `main_h-overlay_h-${margin}`
     : margin;
 
-  return `[${smallInput}:v][${mainInput}:v]scale2ref=w=trunc(main_w*${sizeRatio}/2)*2:h=-2[pip][base];[base][pip]overlay=x=${x}:y=${y}:shortest=1[v]`;
+  return `[${smallInput}:v][${mainInput}:v]scale2ref=w=trunc(iw*${sizeRatio}/2)*2:h=trunc(ow/mdar/2)*2[pip-scaled][base];[pip-scaled]setsar=1[pip];[base][pip]overlay=x=${x}:y=${y}:shortest=1[v]`;
 }
 
 function addOptionalAudioMap(

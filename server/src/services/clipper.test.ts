@@ -45,18 +45,18 @@ test("builds a bottom-right rear overlay over the fullscreen front camera", () =
       pipSizePercent: 30,
       pipCorner: "bottom-right",
     }),
-    "[1:v][0:v]scale2ref=w=trunc(main_w*0.3/2)*2:h=-2[pip][base];[base][pip]overlay=x=main_w-overlay_w-trunc(main_w*0.02):y=main_h-overlay_h-trunc(main_w*0.02):shortest=1[v]",
+    "[1:v][0:v]scale2ref=w=trunc(iw*0.3/2)*2:h=trunc(ow/mdar/2)*2[pip-scaled][base];[pip-scaled]setsar=1[pip];[base][pip]overlay=x=main_w-overlay_w-trunc(main_w*0.02):y=main_h-overlay_h-trunc(main_w*0.02):shortest=1[v]",
   );
 });
 
-test("builds a top-left front overlay over the fullscreen rear camera", () => {
+test("sizes the front overlay relative to the fullscreen rear camera", () => {
   assert.equal(
     buildPictureInPictureFilter({
       channels: "rear-pip-front",
-      pipSizePercent: 40,
+      pipSizePercent: 50,
       pipCorner: "top-left",
     }),
-    "[0:v][1:v]scale2ref=w=trunc(main_w*0.4/2)*2:h=-2[pip][base];[base][pip]overlay=x=trunc(main_w*0.02):y=trunc(main_w*0.02):shortest=1[v]",
+    "[0:v][1:v]scale2ref=w=trunc(iw*0.5/2)*2:h=trunc(ow/mdar/2)*2[pip-scaled][base];[pip-scaled]setsar=1[pip];[base][pip]overlay=x=trunc(main_w*0.02):y=trunc(main_w*0.02):shortest=1[v]",
   );
 });
 
