@@ -149,9 +149,10 @@ export function loadRecordedGpxTrack(
 /**
  * Extract timed GPS track from embedded metadata.
  * Priority:
- *  1) exiftool (-ee) via CSV: GPSDateTime, lat, lon, speed(m/s)
- *  2) ffprobe NMEA from data and subtitle streams (if ENABLE_FFPROBE_DATA_STREAMS != "false")
- *  3) ffprobe NMEA from H.264 video SEI (v:0) (if ENABLE_FFPROBE_VIDEO_STREAMS="true")
+ *  1) BlackVue ".gps" sidecar next to the clip (models that predate embedded GPS)
+ *  2) exiftool (-ee) via CSV: GPSDateTime, lat, lon, speed(m/s)
+ *  3) ffprobe NMEA from data and subtitle streams (if ENABLE_FFPROBE_DATA_STREAMS != "false")
+ *  4) ffprobe NMEA from H.264 video SEI (v:0) (if ENABLE_FFPROBE_VIDEO_STREAMS="true")
  *
  * Optional env:
  *  - ENABLE_FFPROBE_DATA_STREAMS: enable ffprobe data/subtitle streams fallback (default: true)
@@ -201,11 +202,15 @@ export async function extractTimedGpsTrack(
 
   // Not cached or cache invalid, extract
   logger.info(`Extracting GPS from: ${filePath}`);
-  const viaExif = await extractViaExifToolCSV(filePath);
-  let data: GpsPoint[] = [];
-  if (viaExif.length) {
-    data = viaExif;
-  } else {
+  // BlackVue models older than the X series log GPS to a .gps sidecar rather than
+  // into the MP4, so check for one before paying for an exiftool scan.
+  let data: GpsPoint[] = readGpsSidecarTrack(filePath);
+
+  if (!data.length) {
+    data = await extractViaExifToolCSV(filePath);
+  }
+
+  if (!data.length) {
     const enableDataStreams =
       process.env.ENABLE_FFPROBE_DATA_STREAMS !== "false";
     const enableVideoStreams =
@@ -399,6 +404,133 @@ async function extractViaExifToolCSV(filePath: string): Promise<GpsPoint[]> {
     logger.warn({ error }, `[ExifTool] Extraction error for: ${filePath}`);
     return [];
   }
+}
+
+/* ---------------- BlackVue ".gps" sidecar ---------------- */
+
+const GPS_SIDECAR_EXTENSIONS = [".gps", ".GPS"] as const;
+
+/**
+ * BlackVue models older than the X series keep the GPS track beside the clip as
+ * "<clip>.gps" instead of embedding it. Only the front unit carries a receiver,
+ * so rear clips have no sidecar and fall through to the other extractors.
+ */
+export function readGpsSidecarTrack(filePath: string): GpsPoint[] {
+  const base = filePath.slice(
+    0,
+    filePath.length - path.extname(filePath).length,
+  );
+
+  for (const ext of GPS_SIDECAR_EXTENSIONS) {
+    const sidecarPath = base + ext;
+    if (!fs.existsSync(sidecarPath)) continue;
+    try {
+      const points = parseNmeaLog(fs.readFileSync(sidecarPath, "utf8"));
+      logger.info(
+        `[sidecar] Extracted ${points.length} GPS points from: ${sidecarPath}`,
+      );
+      return points;
+    } catch (error) {
+      logger.warn(
+        { error },
+        `[sidecar] Failed to read GPS sidecar: ${sidecarPath}`,
+      );
+      return [];
+    }
+  }
+
+  return [];
+}
+
+interface NmeaLogFix {
+  epochMs?: number;
+  todSec: number;
+  lat?: number;
+  lon?: number;
+  alt?: number;
+  speedKph?: number;
+}
+
+/**
+ * Parse a BlackVue GPS log: one NMEA sentence per line, each prefixed with the
+ * unix time in milliseconds, e.g.
+ *   [1555957502837]$GPRMC,162458.00,A,5228.16177,N,00612.34567,E,0.05,,220419,,,A*7C
+ * The RMC and GGA sentences of a single fix share an NMEA time of day, so they
+ * are merged on that rather than on the log timestamp, which is stamped per line.
+ */
+export function parseNmeaLog(text: string): GpsPoint[] {
+  const fixes = new Map<string, NmeaLogFix>();
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const prefixed = RegExp(/^\[(\d+)\]\s*(\$.+)$/).exec(line);
+    const sentence = prefixed ? prefixed[2] : line;
+    const epochMs = prefixed ? Number(prefixed[1]) : undefined;
+    if (!sentence.startsWith("$")) continue;
+
+    const isRmc = /^\$G[A-Z]RMC,/.test(sentence);
+    const isGga = /^\$G[A-Z]GGA,/.test(sentence);
+    if (!isRmc && !isGga) continue;
+
+    const parsed = isRmc ? parseRMC(sentence) : parseGGA(sentence);
+    if (!parsed || !isFiniteNum(parsed.tsSec)) continue;
+    if (isRmc && "status" in parsed && parsed.status && parsed.status !== "A") {
+      continue; // Receiver reported the fix as void
+    }
+
+    const key = parsed.tsSec.toFixed(3);
+    const fix = fixes.get(key) || { todSec: parsed.tsSec };
+    if (fix.epochMs === undefined && isFiniteNum(epochMs))
+      fix.epochMs = epochMs;
+    if (isFiniteNum(parsed.lat)) fix.lat = parsed.lat;
+    if (isFiniteNum(parsed.lon)) fix.lon = parsed.lon;
+    if ("alt" in parsed && isFiniteNum(parsed.alt)) fix.alt = parsed.alt;
+    if ("speedKph" in parsed && isFiniteNum(parsed.speedKph)) {
+      fix.speedKph = parsed.speedKph;
+    }
+    fixes.set(key, fix);
+  }
+
+  const located = [...fixes.values()].filter(
+    (fix) => isFiniteNum(fix.lat) && isFiniteNum(fix.lon),
+  );
+  if (!located.length) return [];
+
+  const elapsed = elapsedSeconds(located);
+  const points: GpsPoint[] = located.map((fix, index) => ({
+    tsSec: elapsed[index],
+    lat: fix.lat as number,
+    lon: fix.lon as number,
+    alt: fix.alt,
+    speedKph: fix.speedKph,
+  }));
+
+  points.sort((a, b) => a.tsSec - b.tsSec);
+  return dedupePoints(points);
+}
+
+/**
+ * Seconds from the first fix. The log timestamps are preferred because they are
+ * absolute; NMEA time of day is the fallback and has to be unwrapped so a clip
+ * that crosses midnight does not jump back a day.
+ */
+function elapsedSeconds(fixes: NmeaLogFix[]): number[] {
+  if (fixes.every((fix) => isFiniteNum(fix.epochMs))) {
+    const first = Math.min(...fixes.map((fix) => fix.epochMs as number));
+    return fixes.map((fix) => ((fix.epochMs as number) - first) / 1000);
+  }
+
+  const SECONDS_PER_DAY = 86_400;
+  let previous = fixes[0].todSec;
+  let dayOffset = 0;
+  return fixes.map((fix) => {
+    if (fix.todSec < previous - SECONDS_PER_DAY / 2)
+      dayOffset += SECONDS_PER_DAY;
+    previous = fix.todSec;
+    return fix.todSec + dayOffset - fixes[0].todSec;
+  });
 }
 
 /* ---------------- ffprobe paths (fallback) ---------------- */
