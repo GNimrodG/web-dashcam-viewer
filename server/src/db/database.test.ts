@@ -9,6 +9,8 @@ import {
   createVideoPoi,
   deleteRecordingStartTime,
   deleteVideoPoi,
+  getManualPoiLabels,
+  getManualPoiLabelsMap,
   getVideoPoiCount,
   getVideoPoiCounts,
   getVideoPoiTypeCounts,
@@ -126,6 +128,12 @@ test("persists, orders, and deletes video POIs within their recording", () => {
     assert.deepEqual(
       [...getVideoPoiTypeCountsMap()],
       [["recording-a", { total: 2, manual: 1, cameraSave: 1 }]],
+    );
+    assert.deepEqual(getManualPoiLabels("recording-a"), ["Later POI"]);
+    assert.deepEqual(getManualPoiLabels("recording-b"), []);
+    assert.deepEqual(
+      [...getManualPoiLabelsMap()],
+      [["recording-a", ["Later POI"]]],
     );
     assert.equal(deleteVideoPoi("recording-a", "automatic-save"), false);
 

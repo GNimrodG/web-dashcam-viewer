@@ -454,6 +454,35 @@ export function getVideoPoiCounts(): Map<string, number> {
   return new Map(rows.map((row) => [row.videoId, row.count]));
 }
 
+export function getManualPoiLabels(videoId: string): string[] {
+  const rows = db
+    .prepare(
+      `SELECT label
+       FROM video_pois
+       WHERE video_id = ?
+       ORDER BY time_sec ASC, created_at ASC`,
+    )
+    .all(videoId) as Array<{ label: string }>;
+  return rows.map((row) => row.label);
+}
+
+export function getManualPoiLabelsMap(): Map<string, string[]> {
+  const rows = db
+    .prepare(
+      `SELECT video_id as videoId, label
+       FROM video_pois
+       ORDER BY video_id ASC, time_sec ASC, created_at ASC`,
+    )
+    .all() as Array<{ videoId: string; label: string }>;
+  const result = new Map<string, string[]>();
+  for (const row of rows) {
+    const labels = result.get(row.videoId) ?? [];
+    labels.push(row.label);
+    result.set(row.videoId, labels);
+  }
+  return result;
+}
+
 export function getVideoPoiTypeCounts(videoId: string): VideoPoiTypeCounts {
   const row = db
     .prepare(
