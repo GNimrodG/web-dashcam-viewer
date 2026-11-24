@@ -1,6 +1,6 @@
-# Web Dashcam Viewer (Viofo Multi-Channel)
+# Web Dashcam Viewer (Multi-Channel)
 
-A full-featured web application for viewing and managing Viofo dashcam recordings with front and rear camera support.
+A full-featured web application for viewing and managing Viofo and BlackVue dashcam recordings with front and rear camera support.
 
 ## Features
 
@@ -11,10 +11,14 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 - **Real-time file watching** with network share support
 - **HTTP range streaming** for efficient video delivery
 - **Cross-platform path handling** (Windows/Linux compatible)
-- **Camera and license plate OCR** from the recording's on-video overlay
+- **Camera and license plate OCR** from the recording's on-video overlay (Viofo overlay layout)
 - **HDR detection** from the camera overlay with an HDR badge on generated clips
 - **Per-recording OCR status** that distinguishes pending, completed, no-match, failed, and never-processed recordings
-- **Automatic recording-save detection** from the camera's audio beep pattern
+- **Automatic recording-save detection** from the camera's audio beep pattern (Viofo beep)
+
+> The overlay OCR and beep detection read Viofo-specific cues. BlackVue
+> recordings index, pair, play, clip and map normally, but report no OCR match
+> and no save beeps.
 
 ### GPS & Location
 
@@ -234,17 +238,25 @@ A full-featured web application for viewing and managing Viofo dashcam recording
 
 ### Implementation Notes
 
-- GPS extraction uses ExifTool to parse embedded NMEA data
+- GPS extraction uses ExifTool to parse embedded NMEA data, falling back to
+  ffprobe on the data, subtitle and video streams
+- BlackVue models older than the X series log GPS to a `.gps` sidecar beside the
+  clip instead of embedding it; those are read directly, no ExifTool needed.
+  Only the front unit carries a receiver, so rear clips have no sidecar.
 - See `server/src/services/gps.ts` for extraction logic
-- Customize for specific Viofo models/firmware as needed
+- Customize for specific models/firmware as needed
 
 ## File Pairing & Indexing
 
 ### Pairing Heuristics
 
-The indexer pairs front/rear clips using common Viofo filename patterns:
+The indexer pairs front/rear clips using common dashcam filename patterns:
 
-- `YYYYMMDD_HHMMSS_A.mp4` / `YYYYMMDD_HHMMSS_B.mp4` (or F/R)
+- Viofo: `YYYY_MMDD_HHMMSS_A.mp4` / `_B.mp4` (or F/R, 1/2)
+- Viofo: `YYYYMMDD_HHMMSS_A.mp4` / `_B.mp4` (or F/R, 1/2)
+- BlackVue: `YYYYMMDD_HHMMSS_NF.mp4` / `_NR.mp4`, where the first letter is the
+  recording type (N normal, E event, P parking, M manual) and the second is the
+  camera. Interior lenses on three-channel models are skipped.
 - `YYYYMMDD_HHMMSS_front.mp4` / `YYYYMMDD_HHMMSS_rear.mp4`
 - Fuzzy matching (±1 second) for timestamp variations
 
@@ -434,7 +446,7 @@ Implement model-specific extraction in `server/src/services/gps.ts`:
 export async function extractTimedGpsTrack(
   filePath: string,
 ): Promise<GpsPoint[]> {
-  // Your Viofo-specific extraction logic
+  // Your model-specific extraction logic
 }
 ```
 

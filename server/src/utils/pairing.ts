@@ -9,10 +9,11 @@ export interface ParsedName {
 }
 
 /**
- * Attempt to parse Viofo-like filename and infer channel key.
+ * Attempt to parse a dashcam filename and infer channel key.
  * Supported patterns (ext case-insensitive):
- *  - YYYY_MMDD_HHMMSS_{X}.mp4 (X is A/B/F/R/1/2)
- *  - YYYYMMDD_HHMMSS_{X}.mp4 (X is A/B/F/R/1/2)
+ *  - YYYY_MMDD_HHMMSS_{X}.mp4 (Viofo; X is A/B/F/R/1/2)
+ *  - YYYYMMDD_HHMMSS_{X}.mp4 (Viofo; X is A/B/F/R/1/2)
+ *  - YYYYMMDD_HHMMSS_{T}{X}.mp4 (BlackVue; T is the recording type N/E/P/M, X is F/R)
  *  - YYYYMMDD_HHMMSS_front.mp4 / _rear.mp4
  */
 export function parseFilenameForPairing(filePath: string): ParsedName {
@@ -44,7 +45,21 @@ export function parseFilenameForPairing(filePath: string): ParsedName {
     return { key: `${date}_${time}`, channel, date, time };
   }
 
-  // 2) YYYYMMDD_HHMMSS(_anything_)?(front|rear).mp4
+  // 2) BlackVue: YYYYMMDD_HHMMSS_{type}{direction}.mp4
+  // Example: 20250722_110221_NF.MP4 (Normal mode, Front camera)
+  // The type letter is dropped: front and rear of the same recording always share
+  // it, so it adds nothing to the pair key. A trailing suffix (sub-stream markers
+  // on some models) is tolerated. Three-channel models add an interior lens (I),
+  // which stays unmapped because this app only renders front and rear.
+  m = RegExp(/^(\d{8})_(\d{6})_[nepm]([fr])[a-z0-9]*\.(mp4|mov)$/i).exec(lower);
+  if (m) {
+    const date = m[1];
+    const time = m[2];
+    const channel = mapTokenToChannel(m[3]);
+    return { key: `${date}_${time}`, channel, date, time };
+  }
+
+  // 3) YYYYMMDD_HHMMSS(_anything_)?(front|rear).mp4
   m = RegExp(/^(\d{8})_(\d{6})(?:_[^_]*)?_(front|rear)\.(mp4|mov)$/i).exec(
     lower,
   );
@@ -55,7 +70,7 @@ export function parseFilenameForPairing(filePath: string): ParsedName {
     return { key: `${date}_${time}`, channel: chWord, date, time };
   }
 
-  // 3) Fallback: detect "front"/"rear" anywhere and strip them to create a key
+  // 4) Fallback: detect "front"/"rear" anywhere and strip them to create a key
   if (lower.includes("front") || lower.includes("rear")) {
     const ch: Channel | undefined = lower.includes("front")
       ? "front"
@@ -66,7 +81,7 @@ export function parseFilenameForPairing(filePath: string): ParsedName {
     return { key: core, channel: ch };
   }
 
-  // 4) Last resort: use filename without extension as key (unpaired)
+  // 5) Last resort: use filename without extension as key (unpaired)
   const core = lower.replace(/\.(mp4|mov)$/i, "");
   return { key: core };
 }
