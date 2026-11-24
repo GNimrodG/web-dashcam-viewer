@@ -2,21 +2,50 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { execFileSync } from "node:child_process";
+import test, { after } from "node:test";
 import { closeDatabase, initDatabase } from "../db/database.js";
 import { buildIndex, getVideoPairs } from "./indexer.js";
 
+// The indexer skips clips that ffprobe cannot read or that have no usable
+// duration, so each test clip is a copy of one real one-second video.
+const sampleDir = fs.mkdtempSync(path.join(os.tmpdir(), "dashcam-sample-"));
+const sampleClip = path.join(sampleDir, "sample.mp4");
+let ffmpegMissing: string | false = false;
+try {
+  execFileSync(
+    "ffmpeg",
+    [
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc=size=64x64:rate=5:duration=1",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      sampleClip,
+    ],
+    { stdio: "ignore" },
+  );
+} catch {
+  ffmpegMissing = "ffmpeg is needed to generate a playable test clip";
+}
+after(() => fs.rmSync(sampleDir, { recursive: true, force: true }));
+const it = (name: string, fn: () => Promise<void>) =>
+  test(name, { skip: ffmpegMissing }, fn);
+
 /**
- * Index a throwaway media folder containing the given (empty) clip files and
- * return the recordings the app would show. ffprobe is not needed: a clip that
- * cannot be probed still gets indexed, just without a duration.
+ * Index a throwaway media folder containing the given clips and return the
+ * recordings the app would show.
  */
 async function indexClips(clipNames: string[]) {
   const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), "dashcam-index-"));
   initDatabase(mediaDir);
   try {
     for (const name of clipNames) {
-      fs.writeFileSync(path.join(mediaDir, name), "");
+      fs.copyFileSync(sampleClip, path.join(mediaDir, name));
     }
     await buildIndex(mediaDir);
     return getVideoPairs();
@@ -26,7 +55,7 @@ async function indexClips(clipNames: string[]) {
   }
 }
 
-test("indexes a BlackVue front and rear clip as one recording", async () => {
+it("indexes a BlackVue front and rear clip as one recording", async () => {
   const pairs = await indexClips([
     "20250910_131727_NF.mp4",
     "20250910_131727_NR.mp4",
@@ -38,7 +67,7 @@ test("indexes a BlackVue front and rear clip as one recording", async () => {
   assert.equal(pairs[0].channels.rear?.filename, "20250910_131727_NR.mp4");
 });
 
-test("indexes Viofo and BlackVue recordings side by side", async () => {
+it("indexes Viofo and BlackVue recordings side by side", async () => {
   const pairs = await indexClips([
     "2025_0910_131727_F.MP4",
     "2025_0910_131727_R.MP4",
@@ -56,7 +85,7 @@ test("indexes Viofo and BlackVue recordings side by side", async () => {
   }
 });
 
-test("indexes a BlackVue event recording with only the front camera", async () => {
+it("indexes a BlackVue event recording with only the front camera", async () => {
   const pairs = await indexClips(["20250910_131727_EF.mp4"]);
 
   assert.equal(pairs.length, 1);
@@ -64,7 +93,7 @@ test("indexes a BlackVue event recording with only the front camera", async () =
   assert.equal(pairs[0].channels.rear, undefined);
 });
 
-test("keeps a clip with no identifiable channel out of the library", async () => {
+it("keeps a clip with no identifiable channel out of the library", async () => {
   // This is what happened to every BlackVue clip before the filename pattern
   // existed: parsing yields no channel, the file joins no channel of its pair,
   // and a pair holding neither front nor rear is never listed. The failure is

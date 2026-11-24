@@ -460,12 +460,13 @@ interface NmeaLogFix {
  */
 export function parseNmeaLog(text: string): GpsPoint[] {
   const fixes = new Map<string, NmeaLogFix>();
+  const voidKeys = new Set<string>();
 
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
 
-    const prefixed = RegExp(/^\[(\d+)\]\s*(\$.+)$/).exec(line);
+    const prefixed = /^\[(\d+)\]\s*(\$.+)$/.exec(line);
     const sentence = prefixed ? prefixed[2] : line;
     const epochMs = prefixed ? Number(prefixed[1]) : undefined;
     if (!sentence.startsWith("$")) continue;
@@ -476,11 +477,18 @@ export function parseNmeaLog(text: string): GpsPoint[] {
 
     const parsed = isRmc ? parseRMC(sentence) : parseGGA(sentence);
     if (!parsed || !isFiniteNum(parsed.tsSec)) continue;
-    if (isRmc && "status" in parsed && parsed.status && parsed.status !== "A") {
-      continue; // Receiver reported the fix as void
+    const key = parsed.tsSec.toFixed(3);
+    // Receiver reported the fix as void (RMC status V, or GGA fix quality 0).
+    // Remember it so the other sentence of the same fix cannot bring it back.
+    const isVoid = isRmc
+      ? "status" in parsed && !!parsed.status && parsed.status !== "A"
+      : sentence.split(",")[6] === "0";
+    if (isVoid || voidKeys.has(key)) {
+      voidKeys.add(key);
+      fixes.delete(key);
+      continue;
     }
 
-    const key = parsed.tsSec.toFixed(3);
     const fix = fixes.get(key) || { todSec: parsed.tsSec };
     if (fix.epochMs === undefined && isFiniteNum(epochMs))
       fix.epochMs = epochMs;

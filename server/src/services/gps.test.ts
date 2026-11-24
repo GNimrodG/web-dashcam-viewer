@@ -126,6 +126,18 @@ test("drops GPS fixes the receiver reported as void", () => {
   assertClose(points[0].lat, 52 + 28.16277 / 60);
 });
 
+test("drops the GGA half of a void fix too", () => {
+  const points = parseNmeaLog(
+    "[1555957502837]$GPRMC,162458.00,V,5228.16000,N,00612.34000,E,0.00,,220419,,,N*53\r\n" +
+      "[1555957502838]$GPGGA,162458.00,5228.16000,N,00612.34000,E,1,08,1.20,42.5,M,45.0,M,,*5A\r\n" +
+      "[1555957503839]$GPGGA,162459.00,5228.16100,N,00612.34100,E,0,00,,,M,,M,,*5A\r\n" +
+      "[1555957503840]$GPRMC,162459.00,A,5228.16100,N,00612.34100,E,1.00,,220419,,,A*7C\r\n" +
+      "[1555957504840]$GPRMC,162500.00,A,5228.16277,N,00612.34667,E,10.00,,220419,,,A*7C",
+  );
+  assert.equal(points.length, 1);
+  assertClose(points[0].lat, 52 + 28.16277 / 60);
+});
+
 test("falls back to NMEA time of day when the log has no timestamps", () => {
   const points = parseNmeaLog(
     "$GPRMC,162458.00,A,5228.16177,N,00612.34567,E,0.05,,220419,,,A*7C\n" +
