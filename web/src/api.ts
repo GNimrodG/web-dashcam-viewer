@@ -64,6 +64,7 @@ export interface VideoPair {
   poiCount?: number;
   manualPoiCount?: number;
   cameraSavePoiCount?: number;
+  manualPoiLabels?: string[];
   audioStatus?: "pending" | "present" | "silent" | "no-audio" | "failed";
   dashcamTimeZone?: string;
   gpsDisabled?: boolean;

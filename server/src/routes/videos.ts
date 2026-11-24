@@ -59,6 +59,8 @@ import {
   createVideoPoi,
   deleteVideoPoi,
   getAllVideoPois,
+  getManualPoiLabels,
+  getManualPoiLabelsMap,
   getVideoPoiTypeCounts,
   getVideoPoiTypeCountsMap,
   type VideoPoiTypeCounts,
@@ -114,12 +116,14 @@ function serializePair(
   timeZone = getRecordingTimeZone(pair.id) || config.DASHCAM_TIME_ZONE,
   audioScan: RecordingAudioScan | undefined = getRecordingAudioScan(pair.id),
   audioScannerEnabled = getAudioEventScannerStatus().enabled,
+  manualPoiLabels: string[] = getManualPoiLabels(pair.id),
 ) {
   return {
     ...pair,
     poiCount: poiCounts.total,
     manualPoiCount: poiCounts.manual,
     cameraSavePoiCount: poiCounts.cameraSave,
+    manualPoiLabels,
     dashcamTimeZone: timeZone,
     audioStatus: getRecordingAudioStatus(pair, audioScan, audioScannerEnabled),
   };
@@ -132,6 +136,7 @@ router.get("/", (_req, res) => {
   const timeZones = getRecordingTimeZones();
   const audioScans = getRecordingAudioScans();
   const audioScannerEnabled = getAudioEventScannerStatus().enabled;
+  const manualPoiLabels = getManualPoiLabelsMap();
   res.json(
     pairs.map((pair) =>
       serializePair(
@@ -140,6 +145,7 @@ router.get("/", (_req, res) => {
         timeZones.get(pair.id) || config.DASHCAM_TIME_ZONE,
         audioScans.get(pair.id),
         audioScannerEnabled,
+        manualPoiLabels.get(pair.id) ?? [],
       ),
     ),
   );

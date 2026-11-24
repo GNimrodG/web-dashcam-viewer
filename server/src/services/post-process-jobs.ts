@@ -21,6 +21,7 @@ import {
   retryRecordingAudioEvents,
 } from "./audio-events.js";
 import {
+  getOverlayMetadataScanIssue,
   getOverlayMetadataScannerStatus,
   retryOverlayMetadataScan,
 } from "./overlay-metadata.js";
@@ -130,6 +131,14 @@ export function overlayJobStatus(
 ): PostProcessJobStatus {
   const active = runtimeState(pair.id, runtime);
   if (active) return active;
+  const scanIssue = getOverlayMetadataScanIssue(pair);
+  if (scanIssue) {
+    return {
+      state: "unavailable",
+      message: scanIssue,
+      retryable: false,
+    };
+  }
   const retryable = scanner.state === "ready";
   switch (pair.overlayMetadataOcrStatus) {
     case "found":

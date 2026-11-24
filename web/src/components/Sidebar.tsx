@@ -368,7 +368,11 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
         (placeSearch &&
           p.endLocationName?.toLowerCase().includes(placeSearch)) ||
         (placeSearch && p.cameraType?.toLowerCase().includes(placeSearch)) ||
-        (placeSearch && p.licensePlate?.toLowerCase().includes(placeSearch)),
+        (placeSearch && p.licensePlate?.toLowerCase().includes(placeSearch)) ||
+        (placeSearch &&
+          p.manualPoiLabels?.some((label) =>
+            label.toLowerCase().includes(placeSearch),
+          )),
     );
   }, [importantOnly, pairs, search, withoutPoisOnly]);
 
@@ -723,7 +727,7 @@ const Sidebar: FunctionComponent<SidebarProps> = ({
       <Input
         size="sm"
         startDecorator={<SearchRoundedIcon />}
-        placeholder="Search (date or location)"
+        placeholder="Search (date, location or POI)"
         disabled={!pairs?.length}
         value={search}
         onChange={(e) => setSearch(e.target.value)}

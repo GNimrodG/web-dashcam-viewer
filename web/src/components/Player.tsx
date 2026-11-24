@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useMemo } from "react";
+import { useRef, useEffect, useState, useMemo, useCallback } from "react";
 import {
   VideoPair,
   videoSourceUrl,
@@ -178,7 +178,11 @@ export function Player({
   const endPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const startPreviewFramesRef = useRef<PreviewFrameSet>({});
   const endPreviewFramesRef = useRef<PreviewFrameSet>({});
-  const previewRequestIdRef = useRef(0);
+  // Preview captures share the player's video elements, so they run one at a
+  // time. Only the latest requested start/end time is kept while one runs.
+  const pendingPreviewTimesRef = useRef<{ start?: number; end?: number }>({});
+  const previewWorkerRunningRef = useRef(false);
+  const previewSessionRef = useRef(0);
   const previewOptionsRef = useRef({
     channels: clipChannels,
     pipSizePercent: clipPipSizePercent,
@@ -201,6 +205,8 @@ export function Player({
     setClipStartTime(startTime);
     setClipEndTime(endTime);
 
+    if (isPlaying) onPauseBoth();
+
     // Store original times
     originalTimeFrontRef.current = frontRef.current?.currentTime || 0;
     originalTimeRearRef.current = rearRef.current?.currentTime || 0;
@@ -215,8 +221,13 @@ export function Player({
     setShowClipDialog(true);
     setClipJobStatus(null);
 
-    // Update preview frames after a short delay to ensure dialog is rendered
-    setTimeout(() => void updatePreviewFrames("both", startTime, endTime), 100);
+    // Drop frames from a previous dialog; the canvas refs render whatever is
+    // cached once they mount, so captures may finish before the dialog does.
+    previewSessionRef.current += 1;
+    pendingPreviewTimesRef.current = {};
+    startPreviewFramesRef.current = {};
+    endPreviewFramesRef.current = {};
+    updatePreviewFrames("both", startTime, endTime);
   };
 
   const restoreClipPreviewPosition = () => {
@@ -230,7 +241,8 @@ export function Player({
 
   const handleCloseClipDialog = () => {
     if (isCreatingClip) return;
-    previewRequestIdRef.current += 1;
+    previewSessionRef.current += 1;
+    pendingPreviewTimesRef.current = {};
     restoreClipPreviewPosition();
     setShowClipDialog(false);
   };
@@ -332,6 +344,7 @@ export function Player({
       : requestedTime;
     const targetTime = Math.min(requestedTime, latestFrameTime);
     if (
+      !video.seeking &&
       video.readyState >= 2 &&
       Math.abs(video.currentTime - targetTime) < 0.01
     ) {
@@ -356,40 +369,83 @@ export function Player({
     });
   };
 
-  const capturePreviewAt = async (time: number): Promise<PreviewFrameSet> => {
+  const capturePreviewAt = async (
+    time: number,
+    session: number,
+  ): Promise<PreviewFrameSet | null> => {
     const videos = [frontRef.current, rearRef.current].filter(
       (video): video is HTMLVideoElement => Boolean(video),
     );
     const ready = await Promise.all(
       videos.map((video) => waitForPreviewVideoReady(video)),
     );
+    // Don't seek after the dialog closed and restored the playback position.
+    if (session !== previewSessionRef.current) return null;
     await Promise.all(
       videos.map((video, index) =>
         ready[index] ? seekVideoForPreview(video, time) : Promise.resolve(),
       ),
     );
+    if (session !== previewSessionRef.current) return null;
     return captureAvailablePreviewFrames();
   };
 
-  const updatePreviewFrames = async (
-    which: "start" | "end" | "both" = "both",
-    startTime = clipStartTime,
-    endTime = clipEndTime,
-  ) => {
-    const requestId = ++previewRequestIdRef.current;
-    if (which === "start" || which === "both") {
-      const frames = await capturePreviewAt(startTime);
-      if (requestId !== previewRequestIdRef.current) return;
-      startPreviewFramesRef.current = frames;
-      renderPreviewCanvas(startPreviewCanvasRef.current, frames);
-    }
-    if (which === "end" || which === "both") {
-      const frames = await capturePreviewAt(endTime);
-      if (requestId !== previewRequestIdRef.current) return;
-      endPreviewFramesRef.current = frames;
-      renderPreviewCanvas(endPreviewCanvasRef.current, frames);
+  const runPreviewWorker = async () => {
+    if (previewWorkerRunningRef.current) return;
+    previewWorkerRunningRef.current = true;
+    try {
+      for (;;) {
+        const pending = pendingPreviewTimesRef.current;
+        const which =
+          pending.start !== undefined
+            ? "start"
+            : pending.end !== undefined
+              ? "end"
+              : null;
+        if (!which) break;
+        const time = pending[which]!;
+        delete pending[which];
+
+        const frames = await capturePreviewAt(time, previewSessionRef.current);
+        if (!frames) continue;
+        if (which === "start") {
+          startPreviewFramesRef.current = frames;
+          renderPreviewCanvas(startPreviewCanvasRef.current, frames);
+        } else {
+          endPreviewFramesRef.current = frames;
+          renderPreviewCanvas(endPreviewCanvasRef.current, frames);
+        }
+      }
+    } finally {
+      previewWorkerRunningRef.current = false;
     }
   };
+
+  const updatePreviewFrames = (
+    which: "start" | "end" | "both",
+    startTime: number,
+    endTime: number,
+  ) => {
+    if (which !== "end") pendingPreviewTimesRef.current.start = startTime;
+    if (which !== "start") pendingPreviewTimesRef.current.end = endTime;
+    void runPreviewWorker();
+  };
+
+  const setStartPreviewCanvas = useCallback(
+    (canvas: HTMLCanvasElement | null) => {
+      startPreviewCanvasRef.current = canvas;
+      renderPreviewCanvas(canvas, startPreviewFramesRef.current);
+    },
+    [],
+  );
+
+  const setEndPreviewCanvas = useCallback(
+    (canvas: HTMLCanvasElement | null) => {
+      endPreviewCanvasRef.current = canvas;
+      renderPreviewCanvas(canvas, endPreviewFramesRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (showClipDialog) renderCachedPreviews();
@@ -427,6 +483,8 @@ export function Player({
           }
         });
       });
+      previewSessionRef.current += 1;
+      pendingPreviewTimesRef.current = {};
       restoreClipPreviewPosition();
       setShowClipDialog(false);
     } catch (err) {
@@ -740,6 +798,9 @@ export function Player({
     if (!front || !rear) return;
 
     const syncTime = () => {
+      // Re-assigning the same time still triggers a seek, which would disturb
+      // in-flight clip preview captures of the rear video.
+      if (Math.abs(rear.currentTime - front.currentTime) < 0.01) return;
       rear.currentTime = front.currentTime;
     };
     front.addEventListener("timeupdate", syncTime);
@@ -1432,7 +1493,7 @@ export function Player({
                     Start: {formatTime(clipStartTime)}
                   </Typography>
                   <canvas
-                    ref={startPreviewCanvasRef}
+                    ref={setStartPreviewCanvas}
                     style={{
                       display: "block",
                       width: "100%",
@@ -1449,7 +1510,7 @@ export function Player({
                     End: {formatTime(clipEndTime)}
                   </Typography>
                   <canvas
-                    ref={endPreviewCanvasRef}
+                    ref={setEndPreviewCanvas}
                     style={{
                       display: "block",
                       width: "100%",
@@ -1485,11 +1546,11 @@ export function Player({
 
                     // Only update the preview that changed
                     if (startChanged && endChanged) {
-                      void updatePreviewFrames("both", _start, _end);
+                      updatePreviewFrames("both", _start, _end);
                     } else if (startChanged) {
-                      void updatePreviewFrames("start", _start, _end);
+                      updatePreviewFrames("start", _start, _end);
                     } else if (endChanged) {
-                      void updatePreviewFrames("end", _start, _end);
+                      updatePreviewFrames("end", _start, _end);
                     }
                   }}
                   min={0}
